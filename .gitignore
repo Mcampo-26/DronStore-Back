@@ -1,0 +1,48 @@
+# --- DEPENDENCIAS ---
+# Nunca subir la carpeta node_modules (es pesada y se regenera con npm install)
+node_modules/
+jspm_packages/
+
+# --- CONFIGURACIÓN SENSIBLE (SEGURIDAD) ---
+# Archivos que contienen contraseñas, claves de DB y JWT_SECRET
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- LOGS ---
+# Archivos de registro de errores
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- ARCHIVOS DEL SISTEMA / IDE ---
+# Carpetas específicas de editores (VS Code, JetBrains)
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- COMPILACIÓN / BUILD ---
+# Si usas TypeScript o algún bundler en el futuro
+dist/
+build/
+lib/
+
+# --- BASE DE DATOS LOCAL (Si aplica) ---
+# Si usas SQLite o dumps de MongoDB locales
+*.db
+*.sqlite
+dump.rdb
+
+# --- COBERTURA DE TESTS ---
+coverage/
+.nyc_output
+
+# --- OTROS ---
+.npm
+.eslintcache
