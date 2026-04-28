@@ -7,8 +7,9 @@ import morgan from 'morgan';
 import dbConnect from './src/config/db.js';
 
 // --- IMPORTACIÓN DE RUTAS ---
-import routerUser from './src/routes/User.js';
-import routerAuth from './src/routes/Auth.js';
+import routerUser from './src/routes/Users/User.js';
+import routerAuth from './src/routes/Auth/Auth.js';
+import routerProduct from './src/routes/Product/index.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -55,6 +56,7 @@ app.locals.io = io;
 // 5. Rutas Modulares
 app.use('/auth', routerAuth); 
 app.use('/users', routerUser); 
+app.use('/products', routerProduct); // <--- Agrega la 's' 
 
 // Ruta raíz de salud (Health Check)
 app.get('/', (req, res) => {
