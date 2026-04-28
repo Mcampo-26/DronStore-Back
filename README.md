@@ -1,4 +1,4 @@
-Para que tu Backend esté a la altura de esa descripción futurista, necesitamos una estructura robusta que soporte el Dashboard, la seguridad y la auditoría. Aquí tienes la tarjeta definitiva para el desarrollo del servidor, diseñada para ser pegada en Trello o documentada en tu README.
+
 🛸 Eje Backend: DRONSTORE Core API
 
 Descripción: Implementar la infraestructura de servidor escalable para gestionar la flota de drones, el sistema de auditoría y la lógica de negocio del e-commerce.
