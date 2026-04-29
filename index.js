@@ -19,17 +19,24 @@ dbConnect();
 
 // 2. Configuración de CORS Profesional
 const whiteList = [
-  'https://dronstore.netlify.app', 
+  'https://dronstore.netlify.app',
   'http://localhost:5173',
-  process.env.FRONTEND_URL
+  process.env.FRONTEND_URL // Asegúrate de que esta variable esté en Heroku
 ].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || whiteList.includes(origin)) {
+    // 1. Permitir peticiones sin origen (como Postman o Server-to-Server)
+    if (!origin) return callback(null, true);
+
+    // 2. Verificar si el origen está en nuestra lista
+    const isAllowed = whiteList.some(domain => origin.startsWith(domain));
+
+    if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error('Bloqueado por seguridad CORS'));
+      console.error(`🔴 Bloqueado por CORS: ${origin}`);
+      callback(new Error('No permitido por CORS'));
     }
   },
   credentials: true,
