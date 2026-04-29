@@ -19,28 +19,28 @@ dbConnect();
 
 // 2. Configuración de CORS Profesional
 const whiteList = [
-  'https://dronstore.netlify.app',
-  'http://localhost:5173',
-  process.env.FRONTEND_URL // Asegúrate de que esta variable esté en Heroku
-].filter(Boolean);
+  'https://dronstore.netlify.app', 
+  'http://localhost:5173'
+];
 
+// 2. Configuramos el middleware de CORS
 app.use(cors({
   origin: function (origin, callback) {
-    // 1. Permitir peticiones sin origen (como Postman o Server-to-Server)
+    // Permitir peticiones sin 'origin' (como Postman, cURL o Server-to-Server)
     if (!origin) return callback(null, true);
 
-    // 2. Verificar si el origen está en nuestra lista
-    const isAllowed = whiteList.some(domain => origin.startsWith(domain));
-
-    if (isAllowed) {
-      callback(null, true);
+    // Verificamos si el origen de la petición está en nuestra lista blanca
+    if (whiteList.includes(origin)) {
+      callback(null, true); // ✅ Acceso concedido
     } else {
-      console.error(`🔴 Bloqueado por CORS: ${origin}`);
-      callback(new Error('No permitido por CORS'));
+      // 🔴 Acceso denegado: Esto quedará registrado en tus logs de Heroku
+      console.error(`Bloqueo de seguridad CORS para el origen: ${origin}`);
+      callback(new Error('No permitido por la política de seguridad CORS'));
     }
   },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+  credentials: true, // Requerido para cookies/tokens y para que el SSE funcione bien
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
 
 // 3. Middlewares
