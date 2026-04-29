@@ -6,11 +6,11 @@ import morgan from 'morgan';
 import dbConnect from './src/config/db.js';
 
 // --- IMPORTACIÓN DE RUTAS ---
-import routerUser from './src/routes/Users/User.js';
-import routerAuth from './src/routes/Auth/Auth.js';
+import routerUser from './src/routes/Users/User.js';    // ✅ Cambiado de User.js a index.js
+import routerAuth from './src/routes/Auth/Auth.js';     // ✅ Cambiado de Auth.js a index.js
 import routerProduct from './src/routes/Product/index.js';
-import routerRoles from './src/routes/Roles/index.js';
-import updateRoutes from './src/routes/updates/index.js';
+import routerRoles from './src/routes/Roles/index.js';     // ✅ R mayúscula coincide con la foto
+import updateRoutes from './src/routes/updates/index.js';  
 
 const app = express();
 
