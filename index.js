@@ -10,6 +10,13 @@ import dbConnect from './src/config/db.js';
 import routerUser from './src/routes/Users/User.js';
 import routerAuth from './src/routes/Auth/Auth.js';
 import routerProduct from './src/routes/Product/index.js';
+import routerRoles from   './src/routes/Roles/index.js'
+import updateRoutes from './src/routes/updates/index.js';
+
+
+
+
+
 
 const app = express();
 const httpServer = createServer(app);
@@ -26,15 +33,9 @@ const whiteList = [
 ];
 
 app.use(cors({
-  origin: function (origin, callback) {
-    // Permitir peticiones sin origen (como Postman) o las de la WhiteList
-    if (!origin || whiteList.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('No permitido por CORS - DronStore Security'));
-    }
-  },
-  credentials: true
+  origin: whiteList, // Directamente el array
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 }));
 
 // 3. Middlewares Estándar
@@ -56,7 +57,9 @@ app.locals.io = io;
 // 5. Rutas Modulares
 app.use('/auth', routerAuth); 
 app.use('/users', routerUser); 
-app.use('/products', routerProduct); // <--- Agrega la 's' 
+app.use('/products', routerProduct);
+app.use('/roles', routerRoles); 
+app.use('/updates', updateRoutes);
 
 // Ruta raíz de salud (Health Check)
 app.get('/', (req, res) => {
