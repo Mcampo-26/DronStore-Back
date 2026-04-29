@@ -5,36 +5,44 @@ const router = express.Router();
 
 /**
  * RUTA: GET /updates
- * DESCRIPCIÓN: Establece el canal de Server-Sent Events (SSE) para actualizaciones en tiempo real.
+ * Canal SSE dinámico con Variables de Entorno
  */
 router.get('/', (req, res) => {
-    console.log('--- 📡 Intento de conexión SSE ---');
-    console.log('Origin:', req.headers.origin);
+    const origin = req.headers.origin;
 
-    // Cabeceras manuales para asegurar el permiso
-    res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
+    // Si el origen es válido, lo usamos exactamente como viene
+    if (origin && (origin === 'https://dronstore.netlify.app' || origin === 'http://localhost:5173')) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+        // Fallback de seguridad
+        res.setHeader('Access-Control-Allow-Origin', 'https://dronstore.netlify.app');
+    }
+
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
 
-    // 🟢 Log de éxito en cabeceras
-    console.log('✅ Cabeceras SSE enviadas al cliente');
-
+    // Heartbeat inicial
     res.write(': ok\n\n');
 
+    // Mantenemos la conexión viva para Heroku
+    const keepAlive = setInterval(() => {
+        res.write(': keep-alive\n\n');
+    }, 25000);
+
     const sendUpdate = (data) => {
-        console.log(`📦 Enviando actualización vía SSE: ${data.type}`);
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
     appEvents.on('entity-updated', sendUpdate);
 
     req.on('close', () => {
-        console.log('❌ Conexión SSE cerrada por el cliente');
+        clearInterval(keepAlive);
         appEvents.off('entity-updated', sendUpdate);
-        res.end();
+        console.log("❌ Conexión SSE cerrada");
     });
 });
-// ESTE ES EL EXPORT QUE NODE BUSCA EN TU INDEX.JS
+
 export default router;
