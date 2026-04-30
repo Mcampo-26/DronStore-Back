@@ -1,6 +1,6 @@
 import express from 'express';
 import { 
-  createUsuario,  // ✅ Asegúrate que este nombre sea igual al del controlador
+  createUsuario, 
   getUsuarios, 
   updateUsuario, 
   deleteUsuario 
@@ -8,11 +8,10 @@ import {
 
 const router = express.Router();
 
-// Si tu frontend dispara a /users/register, ponlo así:
-router.post('/register', createUsuario); 
-
-router.get('/', getUsuarios);
-router.put('/:id', updateUsuario);
-router.delete('/:id', deleteUsuario);
+// Rutas de Gestión de Usuarios
+router.post('/register', createUsuario); // Crear
+router.get('/', getUsuarios);            // Leer todos
+router.put('/:id', updateUsuario);       // Actualizar
+router.delete('/:id', deleteUsuario);    // Eliminar
 
 export default router;
