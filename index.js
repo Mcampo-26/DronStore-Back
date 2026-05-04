@@ -13,6 +13,7 @@ import routerRoles from './src/routes/Roles/index.js';     // ✅ R mayúscula c
 import updateRoutes from './src/routes/updates/index.js';  
 import contactRoutes from './src/routes/Contact/index.js';
 import routerStock from './src/routes/Stock/index.js'
+import routerCategory from './src/routes/Category/index.js'
 
 
 
@@ -59,6 +60,11 @@ app.use('/roles', routerRoles);
 app.use('/updates', updateRoutes); // Aquí vive tu SSE
 app.use('/contact', contactRoutes);
 app.use("/stock", routerStock);
+app.use("/category", routerCategory);
+
+
+
+
 // Ruta de Salud
 app.get('/', (req, res) => {
   res.status(200).json({ status: 'online', service: 'Dron-Store SSE-Driven' });

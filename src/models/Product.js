@@ -10,7 +10,12 @@ const ProductSchema = new Schema({
   image2: { type: String },
   image3: { type: String },
   
-  category: { type: String, required: true },
+  // CORRECCIÓN: Ahora es una referencia al modelo de Category
+  category: { 
+    type: Schema.Types.ObjectId, 
+    ref: 'Category', 
+    required: true 
+  },
   
   /* Mantenemos 'stock' como un campo directo por ahora.
      Más adelante, cuando hagamos la lógica de Stock avanzada, 
