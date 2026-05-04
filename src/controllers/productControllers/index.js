@@ -1,4 +1,7 @@
-import Product from "../../models/Product.js"
+import Product from "../../models/Product.js";
+import appEvents from "../../utilities/eventEmitter.js"; // Importación corregida
+
+// 1. OBTENER PRODUCTOS
 export const getProducts = async (req, res) => {
   try {
     const products = await Product.find({}).sort({ createdAt: -1 });
@@ -24,21 +27,31 @@ export const getProductById = async (req, res) => {
 // 3. CREAR PRODUCTO (POST)
 export const createProduct = async (req, res) => {
   try {
-    const body = req.body;
-    const { name, price, image } = body;
+    const { name, price, image } = req.body;
 
     if (!name || !price || !image) {
       return res.status(400).json({ message: "Faltan campos obligatorios" });
     }
 
+    // 🛡️ OPCIONAL: Evitar duplicados exactos en un tiempo corto
+    const existing = await Product.findOne({ name: name.trim() });
+    if (existing) {
+      // Si el producto ya existe, podrías decidir no crearlo o retornar un error
+      return res.status(409).json({ message: "Este producto ya existe" });
+    }
+
     const newProduct = await Product.create({
-      ...body,
+      ...req.body,
+      name: name.trim(),
       price: Number(price),
-      stock: Number(body.stock || 0)
+      stock: Number(req.body.stock || 0)
     });
 
-    // En lugar de revalidateTag, usamos Sockets para avisar al Front
-    req.app.locals.io.emit('product:added', newProduct);
+    // Solo emitimos si la creación fue exitosa
+    appEvents.emit('entity-updated', { 
+      type: 'PRODUCT_CREATED', 
+      payload: newProduct 
+    });
 
     return res.status(201).json(newProduct);
   } catch (error) {
@@ -61,11 +74,15 @@ export const updateProduct = async (req, res) => {
 
     if (!updatedProduct) return res.status(404).json({ error: "No encontrado" });
 
-    // Avisamos a todos los clientes que este producto cambió
-    req.app.locals.io.emit('product:updated', updatedProduct);
+    // ⚡️ TIEMPO REAL: Notificamos que el producto cambió
+    appEvents.emit('entity-updated', { 
+      type: 'PRODUCT_UPDATED', 
+      payload: updatedProduct 
+    });
 
     return res.json(updatedProduct);
   } catch (error) {
+    console.error("PUT_PRODUCT_ERROR:", error);
     return res.status(500).json({ error: "Error al actualizar" });
   }
 };
@@ -78,11 +95,15 @@ export const deleteProduct = async (req, res) => {
 
     if (!deleted) return res.status(404).json({ error: "No encontrado" });
 
-    // Avisamos por Socket que se borró
-    req.app.locals.io.emit('product:deleted', id);
+    // ⚡️ TIEMPO REAL: Notificamos que se eliminó el producto
+    appEvents.emit('entity-updated', { 
+      type: 'PRODUCT_DELETED', 
+      payload: { id } 
+    });
 
     return res.json({ message: "Producto eliminado" });
   } catch (error) {
+    console.error("DELETE_PRODUCT_ERROR:", error);
     return res.status(500).json({ error: "Error al eliminar" });
   }
 };
