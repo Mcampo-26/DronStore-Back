@@ -4,7 +4,7 @@ import Counter from '../../models/Counter.js';
 import appEvents from "../../utilities/eventEmitter.js";
 
 // 🔥 IMPORTACIÓN CORRECTA DE LA LIBRERÍA DE INVENTARIO
-import { inventoryService } from "../../lib/inventoryService.js";
+import { inventoryService } from "../../services/stock/inventoryService.js";
 
 /**
  * 1. GENERAR QR INTEROPERABLE
