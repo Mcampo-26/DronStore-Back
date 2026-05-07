@@ -27,18 +27,17 @@ export const createInteroperableQR = async (req, res) => {
     const expirationDate = new Date(now.getTime() + 40000).toISOString();
 
     const orderData = {
-        // Blindamos la referencia: USER | SOCKET | PRODUCTO
         external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}`,
         title: title,
-        description: title, // 🔥 CLAVE: Usamos el nombre del producto aquí para el rescate en el Webhook
+        description: title, // Blindaje 1
         notification_url: `${baseUrl}/payments/webhook`,
         total_amount: totalAmount,
-        expiration_date: expirationDate, // ISO String de 40 segundos a futuro
+        expiration_date: expirationDate,
         items: items.map((item) => ({
             id: item.productId, 
             sku_number: item.sku || `SKU_${item.productId}`,
             category: "marketplace",
-            title: item.name,
+            title: item.name, // 🔥 Blindaje 2: Aquí debe ir el nombre real
             unit_price: item.price,
             quantity: item.quantity,
             unit_measure: "unit",
@@ -76,6 +75,10 @@ export const createInteroperableQR = async (req, res) => {
 
 
  
+/**
+ * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
+ * Versión optimizada con búsqueda profunda de nombres para evitar "Producto QDRON Store"
+ */
 export const receiveWebhook = async (req, res) => {
     // Normalizamos la entrada de datos (Cuerpo o Query)
     const { type, data } = req.body;
@@ -103,6 +106,15 @@ export const receiveWebhook = async (req, res) => {
         );
 
         const p = response.data;
+
+        // LOG DE DEPURACIÓN PROFUNDA (Revisa esto en Heroku)
+        console.log("🔍 [DEBUG MP] Campos de texto:", {
+            description: p.description,
+            statement: p.statement_descriptor,
+            additional_info_title: p.additional_info?.items?.[0]?.title,
+            order_id: p.order?.id
+        });
+
         if (p.status === "in_process") return res.sendStatus(200);
 
         // 3. Extraer IDs de la referencia externa
@@ -115,7 +127,8 @@ export const receiveWebhook = async (req, res) => {
         let items = [];
         if (p.order?.id) items = await obtenerItemsOrden(p.order.id);
 
-        if (items.length === 0 && p.additional_info?.items) {
+        // Intento B: additional_info (Items directos del pago)
+        if (items.length === 0 && p.additional_info?.items?.length > 0) {
             items = p.additional_info.items.map(i => ({
                 productId: i.id,
                 name: i.title,
@@ -124,19 +137,28 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // 🔥 MEJORA DE NOMBRE: Si el item es genérico, usamos la descripción que mandamos
-        // Esto evita el "Unidad QDRON Especial" o "Código QR"
-        if (items.length === 0 || (items[0]?.name && items[0].name.toLowerCase().includes("qr"))) {
-            console.log("🛠️ Nombre genérico detectado. Aplicando rescate desde descripción...");
+        // 🔥 RESCATE DE EMERGENCIA: Si el nombre es genérico o nulo
+        const esNombreGenerico = (n) => 
+            !n || 
+            n.toLowerCase().includes("qr") || 
+            n.toLowerCase().includes("qdron store") || 
+            n.toLowerCase().includes("adquisición");
+
+        if (items.length === 0 || esNombreGenerico(items[0]?.name)) {
+            console.log("🛠️ Nombre genérico detectado. Aplicando búsqueda profunda de rescate...");
             
-            // Usamos la descripción del pago que ahora contiene el nombre real del producto
-            const nombreReal = (p.description && !p.description.toLowerCase().includes("qr")) 
-                                ? p.description 
-                                : "Producto QDRON Store";
+            // Prioridad de búsqueda: 1. Descripción del pago | 2. Nombre manual
+            let nombreRescatado = "Unidad QDRON Sincronizada";
+
+            if (p.description && !esNombreGenerico(p.description)) {
+                nombreRescatado = p.description;
+            } else if (p.additional_info?.items?.[0]?.title && !esNombreGenerico(p.additional_info.items[0].title)) {
+                nombreRescatado = p.additional_info.items[0].title;
+            }
 
             items = [{
                 productId: productIdBackup || "600000000000000000000001", 
-                name: nombreReal,
+                name: nombreRescatado.replace(/Adquisición QDRON:|Adquisición:/gi, '').trim(),
                 price: p.transaction_amount,
                 quantity: 1
             }];
@@ -150,9 +172,8 @@ export const receiveWebhook = async (req, res) => {
         );
 
         if (p.status === "approved") {
-            // 🔥 SOLUCIÓN AL ERROR DE VALIDACIÓN (ENUM):
-            // Si el método es 'interop_transfer' u otro no definido, forzamos 'mercadopago'
-            const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia']; 
+            // Normalización de método de pago para evitar errores de validación
+            const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia', 'credit_card', 'debit_card']; 
             const metodoFinal = metodosPermitidos.includes(p.payment_method_id) 
                                 ? p.payment_method_id 
                                 : 'mercadopago';
@@ -212,7 +233,6 @@ export const receiveWebhook = async (req, res) => {
 
     } catch (error) {
         console.error("❌ Error Crítico Webhook:", error.message);
-        // Siempre 200 para evitar bucles de reintento de Mercado Pago
         res.status(200).json({ message: "Error procesado" });
     }
 };
