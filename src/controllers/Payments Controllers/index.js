@@ -7,26 +7,36 @@ import appEvents from "../../utilities/eventEmitter.js";
 /**
  * 1. GENERAR QR INTEROPERABLE
  */
+
+/**
+ * 1. GENERAR QR INTEROPERABLE
+ * Refactorizado para incluir Backup de Producto en la referencia externa.
+ */
 export const createInteroperableQR = async (req, res) => {
     const { title, items, totalAmount, expirationDate, socketId, userId } = req.body;
 
-    // Validación de seguridad básica
+    // 1. Validación de seguridad básica
     if (!title || !items || !totalAmount || !socketId || !userId) {
         return res.status(400).json({ success: false, message: "Datos incompletos (Falta Usuario o Socket)." });
     }
 
     const baseUrl = process.env.BACKEND_PUBLIC_URL;
 
+    // 🔥 BACKUP ESTRATÉGICO: 
+    // Extraemos el ID del producto desde los items que vienen del Store.
+    // Esto nos salvará si Mercado Pago no devuelve el detalle de la orden en el Webhook.
+    const backupProductId = items[0]?.productId;
+
     const orderData = {
-        // Almacenamos Usuario y Socket en la referencia externa para el Webhook
-        external_reference: `USER_${userId}|SOCKET_${socketId}`,
+        // 2. Blindamos la referencia: USER | SOCKET | PRODUCTO
+        external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}`,
         title,
         description: "Adquisición en QDRON Store",
         notification_url: `${baseUrl}/payments/webhook`,
         total_amount: totalAmount,
         expiration_date: expirationDate,
         items: items.map((item) => ({
-            id: item.productId,
+            id: item.productId, // ID del Store
             sku_number: item.sku || `SKU_${item.productId}`,
             category: "marketplace",
             title: item.name,
@@ -48,6 +58,7 @@ export const createInteroperableQR = async (req, res) => {
             },
         });
 
+        // 3. Respuesta al Frontend
         res.status(200).json({
             success: true,
             qr_data: response.data.qr_data,
@@ -56,7 +67,10 @@ export const createInteroperableQR = async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Error MP QR:", error.response?.data || error.message);
-        res.status(500).json({ success: false, error: error.response?.data || "Error al conectar con Mercado Pago" });
+        res.status(500).json({ 
+            success: false, 
+            error: error.response?.data || "Error al conectar con Mercado Pago" 
+        });
     }
 };
 
@@ -66,51 +80,77 @@ export const createInteroperableQR = async (req, res) => {
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
 
+    // Solo procesamos notificaciones de pago
     if (type !== "payment") return res.sendStatus(200);
 
     const paymentId = data.id;
 
     try {
-        // Evitar procesamiento duplicado
+        // 1. Evitar procesamiento duplicado
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) return res.sendStatus(200);
 
-        // Obtener detalle del pago desde MP
+        // 2. Obtener detalle del pago desde MP
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
         );
 
-        const paymentData = response.data;
-        const { status, transaction_amount, date_created, external_reference, status_detail, order, description } = paymentData;
+        const { 
+            status, 
+            transaction_amount, 
+            date_created, 
+            external_reference, 
+            status_detail, 
+            order, 
+            description,
+            additional_info 
+        } = response.data;
 
         if (status === "in_process") return res.sendStatus(200);
 
-        // Extraer IDs de la referencia: "USER_id|SOCKET_id"
+        // 3. Extraer IDs de la referencia blindada: "USER_id|SOCKET_id|PROD_id"
         const referenceParts = external_reference ? external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
+        const productIdBackup = referenceParts[2]?.replace('PROD_', ''); // 🔥 NUESTRO SEGURO DE VIDA
 
-        // Escudo contra notificaciones antiguas o sin usuario
+        // Escudo contra notificaciones sin usuario
         if (!userId || userId === "undefined" || userId === "") {
             console.warn("⚠️ Notificación ignorada: No se encontró userId.");
             return res.status(200).json({ message: "Ignorado: falta usuario" });
         }
 
-        // Obtener items de la orden
-        let items = order?.id ? await obtenerItemsOrden(order.id) : [];
+        // 4. Obtener items (Intentamos por varios métodos para no fallar)
+        let items = [];
 
-        // PLAN B: Reconstrucción de items si MP no devuelve el detalle a tiempo
+        // Intento A: Merchant Order oficial
+        if (order?.id) {
+            items = await obtenerItemsOrden(order.id);
+        }
+
+        // Intento B: Additional Info (Respaldo de MP)
+        if (items.length === 0 && additional_info?.items) {
+            items = additional_info.items.map(i => ({
+                productId: i.id,
+                name: i.title,
+                price: parseFloat(i.unit_price),
+                quantity: parseInt(i.quantity)
+            }));
+        }
+
+        // 🔥 Intento C: PLAN B BLINDADO (Usa el ID que mandamos desde el Store)
         if (items.length === 0) {
+            console.log(`📡 Usando Backup ID de la referencia: ${productIdBackup}`);
             items = [{
-                productId: "600000000000000000000001", // ID genérico para pasar validación de ObjectId
-                name: description || "Unidad QDRON (Sincronización Manual)",
+                productId: productIdBackup || "600000000000000000000001", 
+                name: description || "Unidad QDRON",
                 price: transaction_amount,
                 quantity: 1
             }];
         }
 
-        // Incrementar contador de ventas
+        // 5. Incrementar contador de ventas
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
@@ -134,13 +174,16 @@ export const receiveWebhook = async (req, res) => {
 
             await nuevaVenta.save();
             
+            // 6. DESCUENTO DE STOCK (Usando la nueva Service Layer)
             try {
-                await descontarStockPorItems(items);
+                // Ahora items.productId tendrá el ID real de MongoDB
+                await inventoryService.deductStock(items);
+                console.log(`📉 Stock descontado exitosamente para Venta #${counter.value}`);
             } catch (e) {
                 console.error("❌ Error descontando stock:", e.message);
             }
 
-            // Emitir evento para el frontend (SSE)
+            // 7. Notificar al Frontend (SSE)
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -155,7 +198,7 @@ export const receiveWebhook = async (req, res) => {
             console.log(`✅ Venta #${counter.value} completada.`);
             
         } else {
-            // Notificar rechazo
+            // Notificar rechazo al socket específico
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
@@ -173,7 +216,6 @@ export const receiveWebhook = async (req, res) => {
         res.status(500).json({ message: "Error interno" });
     }
 };
-
 /**
  * 3. OBTENER DETALLE DEL PAGO
  */
