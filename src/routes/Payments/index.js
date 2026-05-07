@@ -3,7 +3,7 @@ import {
     createInteroperableQR, 
     receiveWebhook, 
     getDetallePago 
-} from "../../controllers/Payments Controllers/index.js";
+} from "../../controllers/PaymentsControllers/index.js";
 
 const router = express.Router();
 
