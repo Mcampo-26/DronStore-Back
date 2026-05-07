@@ -14,8 +14,8 @@ import updateRoutes from './src/routes/updates/index.js';
 import contactRoutes from './src/routes/Contact/index.js';
 import routerStock from './src/routes/Stock/index.js'
 import routerCategory from './src/routes/Category/index.js'
-
-
+import routerVentas from './src/routes/Ventas/index.js'
+import routerPayments from './src/routes/Payments/index.js';
 
 const app = express();
 
@@ -61,6 +61,8 @@ app.use('/updates', updateRoutes); // Aquí vive tu SSE
 app.use('/contact', contactRoutes);
 app.use("/stock", routerStock);
 app.use("/category", routerCategory);
+app.use("/ventas", routerVentas);
+app.use("/Payments", routerPayments);
 
 
 

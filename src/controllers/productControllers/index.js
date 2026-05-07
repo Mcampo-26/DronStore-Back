@@ -1,5 +1,5 @@
 import Product from "../../models/Product.js";
-import appEvents from "../../utilities/eventEmitter.js"; // Importación corregida
+import appEvents from "../../utilities/eventEmitter.js";
 
 // 1. OBTENER PRODUCTOS
 export const getProducts = async (req, res) => {
@@ -33,10 +33,8 @@ export const createProduct = async (req, res) => {
       return res.status(400).json({ message: "Faltan campos obligatorios" });
     }
 
-    // 🛡️ OPCIONAL: Evitar duplicados exactos en un tiempo corto
     const existing = await Product.findOne({ name: name.trim() });
     if (existing) {
-      // Si el producto ya existe, podrías decidir no crearlo o retornar un error
       return res.status(409).json({ message: "Este producto ya existe" });
     }
 
@@ -47,7 +45,6 @@ export const createProduct = async (req, res) => {
       stock: Number(req.body.stock || 0)
     });
 
-    // Solo emitimos si la creación fue exitosa
     appEvents.emit('entity-updated', { 
       type: 'PRODUCT_CREATED', 
       payload: newProduct 
@@ -66,15 +63,15 @@ export const updateProduct = async (req, res) => {
     const { id } = req.params;
     const body = req.body;
 
+    // ✅ CORRECCIÓN: Se cambió 'new: true' por 'returnDocument: after'
     const updatedProduct = await Product.findByIdAndUpdate(
       id,
       { $set: body },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true } 
     );
 
     if (!updatedProduct) return res.status(404).json({ error: "No encontrado" });
 
-    // ⚡️ TIEMPO REAL: Notificamos que el producto cambió
     appEvents.emit('entity-updated', { 
       type: 'PRODUCT_UPDATED', 
       payload: updatedProduct 
@@ -95,7 +92,6 @@ export const deleteProduct = async (req, res) => {
 
     if (!deleted) return res.status(404).json({ error: "No encontrado" });
 
-    // ⚡️ TIEMPO REAL: Notificamos que se eliminó el producto
     appEvents.emit('entity-updated', { 
       type: 'PRODUCT_DELETED', 
       payload: { id } 
