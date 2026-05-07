@@ -200,15 +200,25 @@ const getSocketIdFromReference = (ref = "") => ref.includes("|") ? ref.split("|"
 
 const obtenerItemsOrden = async (orderId) => {
     try {
-        const { data } = await axios.get(
-            `https://api.mercadopago.com/merchant_orders/${orderId}`,
-            { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
-        );
-        return (data.items || []).map(i => ({
-            productId: i.id,
-            name: i.title,
-            price: i.unit_price,
-            quantity: i.quantity
-        }));
-    } catch { return []; }
-};
+      const { data } = await axios.get(
+        `https://api.mercadopago.com/merchant_orders/${orderId}`,
+        { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
+      );
+  
+      // Mapeamos los items asegurándonos de que el ID sea válido
+      return (data.items || []).map(i => {
+        // Intentamos sacar el ID de varias posibles ubicaciones
+        const idLimpio = i.id || i.external_reference; 
+  
+        return {
+          productId: idLimpio, 
+          name: i.title,
+          price: i.unit_price,
+          quantity: i.quantity
+        };
+      }).filter(item => item.productId && item.productId !== ""); // Eliminamos items sin ID para evitar el crash
+    } catch (error) {
+      console.error("⚠️ Error obteniendo items de la orden:", orderId);
+      return [];
+    }
+  };
