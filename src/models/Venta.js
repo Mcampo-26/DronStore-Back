@@ -6,7 +6,7 @@ const ventaSchema = new mongoose.Schema(
     // Vinculación con el usuario (ObjectId de la colección Users)
     usuario: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+     ref: "Usuario",
       required: true,
     },
     numeroVenta: {

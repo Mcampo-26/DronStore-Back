@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Venta from "../../models/Venta.js"; 
 import { descontarStockPorItems } from "../../helpers/stock.js";
 import appEvents from "../../utilities/eventEmitter.js";
+import Usuario from '../../models/User.js';
 
 
 
@@ -74,7 +75,7 @@ export const getVentas = async (req, res) => {
 
     // Ejecutamos la consulta con populate para tener los datos del usuario
     const ventas = await Venta.find(query)
-      .populate("usuario", "nombre email")
+    .populate("usuario", "nombre email") // Trae solo nombre y email
       .sort({ fechaVenta: -1 }); // Ordenamos por las más recientes primero
 
     res.status(200).json({
