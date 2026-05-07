@@ -7,7 +7,7 @@ import appEvents from "../../utilities/eventEmitter.js";
 
 
 export const createInteroperableQR = async (req, res) => {
-    const { title, items, totalAmount, expirationDate, socketId } = req.body;
+    const { title, items, totalAmount, expirationDate, socketId,userId} = req.body;
 
     // Validación de seguridad
     if (!title || !items || !totalAmount || !socketId) {
@@ -18,12 +18,19 @@ export const createInteroperableQR = async (req, res) => {
     const baseUrl = process.env.BACKEND_PUBLIC_URL;
     // Estructura de la orden para Mercado Pago
     const orderData = {
-        external_reference: `ORDER_${Date.now()}|${socketId}`,
+        // MODIFICADO: Incluimos el ID del usuario en la referencia
+        // Estructura: USER_idUsuario|SOCKET_idSocket
+        external_reference: `USER_${userId}|SOCKET_${socketId}`, 
+        
         title,
         description: "Adquisición en QDRON Store",
-        notification_url: `${baseUrl}/payments/webhook`, // Tu URL de producción
+        
+        // CORREGIDO: notification_url con guion bajo (exigencia de Mercado Pago)
+        notification_url: `${baseUrl}/payments/webhook`, 
+        
         total_amount: totalAmount,
         expiration_date: expirationDate,
+        
         items: items.map((item) => ({
             id: item.productId,
             sku_number: item.sku || `SKU_${item.productId}`,
@@ -34,6 +41,7 @@ export const createInteroperableQR = async (req, res) => {
             unit_measure: "unit",
             total_amount: item.price * item.quantity,
         })),
+        
         cash_out: { amount: 0 },
     };
 
