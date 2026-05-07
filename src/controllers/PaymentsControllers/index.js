@@ -6,12 +6,10 @@ import appEvents from "../../utilities/eventEmitter.js";
 // 🔥 IMPORTACIÓN CORRECTA DE LA LIBRERÍA DE INVENTARIO
 import { inventoryService } from "../../services/stock/inventoryService.js";
 
-/**
- * 1. GENERAR QR INTEROPERABLE
- * Refactorizado para incluir Backup de Producto en la referencia externa.
- */
+
+
 export const createInteroperableQR = async (req, res) => {
-    const { title, items, totalAmount, expirationDate, socketId, userId } = req.body;
+    const { title, items, totalAmount, socketId, userId } = req.body;
 
     // Validación de seguridad básica
     if (!title || !items || !totalAmount || !socketId || !userId) {
@@ -21,17 +19,21 @@ export const createInteroperableQR = async (req, res) => {
     const baseUrl = process.env.BACKEND_PUBLIC_URL;
 
     // 🔥 BACKUP ESTRATÉGICO: 
-    // Extraemos el ID del producto desde los items que vienen del Store.
     const backupProductId = items[0]?.productId;
+
+    // 🕒 CONFIGURACIÓN DE EXPIRACIÓN (40 SEGUNDOS)
+    // Creamos una fecha 40 segundos en el futuro
+    const now = new Date();
+    const expirationDate = new Date(now.getTime() + 40000).toISOString();
 
     const orderData = {
         // Blindamos la referencia: USER | SOCKET | PRODUCTO
         external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}`,
-        title,
-        description: "Adquisición en QDRON Store",
+        title: title,
+        description: title, // 🔥 CLAVE: Usamos el nombre del producto aquí para el rescate en el Webhook
         notification_url: `${baseUrl}/payments/webhook`,
         total_amount: totalAmount,
-        expiration_date: expirationDate,
+        expiration_date: expirationDate, // ISO String de 40 segundos a futuro
         items: items.map((item) => ({
             id: item.productId, 
             sku_number: item.sku || `SKU_${item.productId}`,
@@ -59,8 +61,10 @@ export const createInteroperableQR = async (req, res) => {
             success: true,
             qr_data: response.data.qr_data,
             order_id: response.data.in_store_order_id,
-            socketId
+            socketId,
+            expires_at: expirationDate // Informamos al front cuándo expira
         });
+        
     } catch (error) {
         console.error("❌ Error MP QR:", error.response?.data || error.message);
         res.status(500).json({ 
@@ -70,15 +74,8 @@ export const createInteroperableQR = async (req, res) => {
     }
 };
 
-/**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
- */
-/**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
- */
-/**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
- */
+
+ 
 export const receiveWebhook = async (req, res) => {
     // Normalizamos la entrada de datos (Cuerpo o Query)
     const { type, data } = req.body;
