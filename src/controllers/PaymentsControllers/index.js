@@ -76,23 +76,30 @@ export const createInteroperableQR = async (req, res) => {
 /**
  * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
  */
+/**
+ * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
+ */
 export const receiveWebhook = async (req, res) => {
+    // Normalizamos la entrada de datos (Cuerpo o Query)
     const { type, data } = req.body;
-    const paymentId = data?.id || req.query.id;
+    const paymentId = data?.id || req.query.id || req.query['data.id'];
 
-    console.log(`📩 Webhook recibido: Tipo [${type}] - ID [${paymentId}]`);
+    console.log(`📩 Webhook recibido: Tipo [${type || req.query.topic}] - ID [${paymentId}]`);
     
+    // Solo procesamos pagos
     if (type !== "payment" && req.query.topic !== "payment") {
         return res.sendStatus(200);
     }
 
     try {
+        // 1. Evitar procesamiento duplicado
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) {
-            console.log(`⏭️ Pago ${paymentId} ya procesado.`);
+            console.log(`⏭️ Pago ${paymentId} ya procesado anteriormente.`);
             return res.sendStatus(200);
         }
 
+        // 2. Obtener detalle oficial de Mercado Pago
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
@@ -101,11 +108,13 @@ export const receiveWebhook = async (req, res) => {
         const p = response.data;
         if (p.status === "in_process") return res.sendStatus(200);
 
+        // 3. Extraer IDs de la referencia externa
         const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
         const productIdBackup = referenceParts[2]?.replace('PROD_', '');
 
+        // 4. Lógica de Items con RESCATE DE NOMBRE REAL
         let items = [];
         if (p.order?.id) items = await obtenerItemsOrden(p.order.id);
 
@@ -118,19 +127,25 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // Rescate del nombre (Para que no diga "Código QR")
+        // 🔥 MEJORA DE NOMBRE: Si el item es genérico, usamos la descripción que mandamos
+        // Esto evita el "Unidad QDRON Especial" o "Código QR"
         if (items.length === 0 || (items[0]?.name && items[0].name.toLowerCase().includes("qr"))) {
-            console.log("🛠️ Limpiando nombre genérico detectado...");
+            console.log("🛠️ Nombre genérico detectado. Aplicando rescate desde descripción...");
+            
+            // Usamos la descripción del pago que ahora contiene el nombre real del producto
+            const nombreReal = (p.description && !p.description.toLowerCase().includes("qr")) 
+                                ? p.description 
+                                : "Producto QDRON Store";
+
             items = [{
                 productId: productIdBackup || "600000000000000000000001", 
-                name: (p.description && !p.description.toLowerCase().includes("qr")) 
-                       ? p.description 
-                       : "Unidad QDRON Especial",
+                name: nombreReal,
                 price: p.transaction_amount,
                 quantity: 1
             }];
         }
 
+        // 5. Contador de ventas
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
@@ -138,12 +153,12 @@ export const receiveWebhook = async (req, res) => {
         );
 
         if (p.status === "approved") {
-            // 🔥 CORRECCIÓN DEL ERROR DE ENUM:
-            // Si el método es 'interop_transfer' u otro raro, guardamos 'mercadopago'
-            // para que no falle la validación de tu modelo.
-            const metodoFinal = p.payment_method_id === 'interop_transfer' 
-                                ? 'mercadopago' 
-                                : p.payment_method_id;
+            // 🔥 SOLUCIÓN AL ERROR DE VALIDACIÓN (ENUM):
+            // Si el método es 'interop_transfer' u otro no definido, forzamos 'mercadopago'
+            const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia']; 
+            const metodoFinal = metodosPermitidos.includes(p.payment_method_id) 
+                                ? p.payment_method_id 
+                                : 'mercadopago';
 
             const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
@@ -156,19 +171,22 @@ export const receiveWebhook = async (req, res) => {
                 items,
                 socketId,
                 impresa: false,
-                metodoPago: metodoFinal // <-- Usamos el valor validado
+                metodoPago: metodoFinal 
             });
 
             const ventaFinal = await nuevaVenta.save();
             await ventaFinal.populate('usuario', 'nombre email');
 
+            // 6. Descuento de Stock
             try {
                 await inventoryService.deductStock(items);
+                console.log(`📉 Stock descontado para Venta #${counter.value}`);
             } catch (e) {
                 console.error("❌ Error Stock:", e.message);
             }
 
-            console.log(`🚀 Enviando VENTA_CREADA: #${ventaFinal.numeroVenta}`);
+            // 7. Emisión al Frontend vía SSE
+            console.log(`🚀 VENTA_CREADA EXITOSA: #${ventaFinal.numeroVenta} - ${items[0]?.name}`);
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -182,6 +200,7 @@ export const receiveWebhook = async (req, res) => {
             });
 
         } else {
+            // Pago rechazado
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
@@ -196,13 +215,12 @@ export const receiveWebhook = async (req, res) => {
 
     } catch (error) {
         console.error("❌ Error Crítico Webhook:", error.message);
-        // Respondemos 200 para que MP deje de insistir, pero logueamos el error.
-        res.status(200).json({ message: "Error interno procesado" });
+        // Siempre 200 para evitar bucles de reintento de Mercado Pago
+        res.status(200).json({ message: "Error procesado" });
     }
 };
-/**
- * 3. OBTENER DETALLE DEL PAGO
- */
+ 
+
 export const getDetallePago = async (req, res) => {
     const { paymentId } = req.params;
     try {
