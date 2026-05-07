@@ -1,23 +1,24 @@
 import axios from 'axios';
-import mongoose from "mongoose";
-import Venta from "../../models/Venta.js";
+import Venta from "../../models/Venta.js"; 
 import Counter from '../../models/Counter.js';
 import { descontarStockPorItems } from "../../helpers/stock.js";
 import appEvents from "../../utilities/eventEmitter.js";
 
-
+/**
+ * 1. GENERAR QR INTEROPERABLE
+ */
 export const createInteroperableQR = async (req, res) => {
-    // Recibimos userId desde el frontend para evitar el error de validación de Mongoose
     const { title, items, totalAmount, expirationDate, socketId, userId } = req.body;
 
+    // Validación de seguridad básica
     if (!title || !items || !totalAmount || !socketId || !userId) {
-        return res.status(400).json({ message: "Datos incompletos (Falta Usuario o Socket)." });
+        return res.status(400).json({ success: false, message: "Datos incompletos (Falta Usuario o Socket)." });
     }
 
     const baseUrl = process.env.BACKEND_PUBLIC_URL;
 
     const orderData = {
-        // Guardamos Usuario y Socket en la referencia externa
+        // Almacenamos Usuario y Socket en la referencia externa para el Webhook
         external_reference: `USER_${userId}|SOCKET_${socketId}`,
         title,
         description: "Adquisición en QDRON Store",
@@ -55,86 +56,67 @@ export const createInteroperableQR = async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Error MP QR:", error.response?.data || error.message);
-        res.status(500).json({ success: false, error: error.response?.data || "Error MP" });
+        res.status(500).json({ success: false, error: error.response?.data || "Error al conectar con Mercado Pago" });
     }
 };
 
 /**
  * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
  */
-/**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
- * Procesa la confirmación de pago de Mercado Pago y registra la venta.
- */
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
 
-    // Solo procesamos notificaciones de tipo payment
     if (type !== "payment") return res.sendStatus(200);
 
     const paymentId = data.id;
 
     try {
-        // 1. Evitar duplicados (Idempotencia)
+        // Evitar procesamiento duplicado
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
-        if (ventaExistente) {
-            console.log(`🔁 Pago ${paymentId} ya procesado anteriormente.`);
-            return res.sendStatus(200);
-        }
+        if (ventaExistente) return res.sendStatus(200);
 
-        // 2. Obtener datos detallados del pago desde la API de Mercado Pago
+        // Obtener detalle del pago desde MP
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
         );
 
         const paymentData = response.data;
-        const { 
-            status, 
-            transaction_amount, 
-            date_created, 
-            external_reference, 
-            status_detail, 
-            order,
-            description 
-        } = paymentData;
+        const { status, transaction_amount, date_created, external_reference, status_detail, order, description } = paymentData;
 
-        // Si el pago todavía está en proceso, no hacemos nada y esperamos al próximo reintento
         if (status === "in_process") return res.sendStatus(200);
 
-        // 3. Extraer Identificadores de la referencia externa (USER_id|SOCKET_id)
+        // Extraer IDs de la referencia: "USER_id|SOCKET_id"
         const referenceParts = external_reference ? external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
 
-        // Validación de seguridad para evitar errores de Cast en MongoDB con notificaciones viejas
+        // Escudo contra notificaciones antiguas o sin usuario
         if (!userId || userId === "undefined" || userId === "") {
-            console.warn("⚠️ Notificación ignorada: No se encontró userId en la referencia.");
+            console.warn("⚠️ Notificación ignorada: No se encontró userId.");
             return res.status(200).json({ message: "Ignorado: falta usuario" });
         }
 
-        // 4. Intentar obtener los items de la orden asociada
+        // Obtener items de la orden
         let items = order?.id ? await obtenerItemsOrden(order.id) : [];
 
-        // --- PLAN B: Si MP no devuelve items, reconstruimos con la info del pago ---
+        // PLAN B: Reconstrucción de items si MP no devuelve el detalle a tiempo
         if (items.length === 0) {
-            console.log("🔍 Reconstruyendo items desde la descripción del pago...");
             items = [{
-                productId: null, 
-                name: description || "Unidad QDRON (Sincronizada)",
+                productId: "600000000000000000000001", // ID genérico para pasar validación de ObjectId
+                name: description || "Unidad QDRON (Sincronización Manual)",
                 price: transaction_amount,
                 quantity: 1
             }];
         }
 
-        // 5. Incrementar número de venta secuencial
+        // Incrementar contador de ventas
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
             { returnDocument: 'after', upsert: true }
         );
 
-        // 6. Procesar según el estado del pago
         if (status === "approved") {
             const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
@@ -150,17 +132,15 @@ export const receiveWebhook = async (req, res) => {
                 metodoPago: "mercadopago"
             });
 
-            // Guardar en Base de Datos
             await nuevaVenta.save();
             
-            // Actualizar Stock en segundo plano
             try {
                 await descontarStockPorItems(items);
             } catch (e) {
-                console.error("❌ Error al descontar stock:", e.message);
+                console.error("❌ Error descontando stock:", e.message);
             }
 
-            // 📢 Notificar éxito al Frontend en tiempo real
+            // Emitir evento para el frontend (SSE)
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -168,14 +148,14 @@ export const receiveWebhook = async (req, res) => {
                     transactionId: paymentId,
                     numeroVenta: counter.value,
                     totalAmount: transaction_amount,
-                    socketId: socketId
+                    socketId: socketId 
                 }
             });
 
-            console.log(`✅ Venta #${counter.value} registrada exitosamente.`);
+            console.log(`✅ Venta #${counter.value} completada.`);
             
         } else {
-            // 📢 Notificar fallo al Frontend en tiempo real
+            // Notificar rechazo
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
@@ -184,20 +164,19 @@ export const receiveWebhook = async (req, res) => {
                     socketId: socketId
                 }
             });
-            console.log(`❌ Pago ${paymentId} rechazado: ${status_detail}`);
         }
 
-        // Responder 200 a Mercado Pago para confirmar recepción
         res.status(200).json({ message: "OK" });
 
     } catch (error) {
         console.error("❌ Error Crítico en Webhook:", error.message);
-        // Respondemos 500 para que Mercado Pago reintente si hubo un error de servidor
-        res.status(500).json({ message: "Error interno procesando webhook" });
+        res.status(500).json({ message: "Error interno" });
     }
 };
 
-
+/**
+ * 3. OBTENER DETALLE DEL PAGO
+ */
 export const getDetallePago = async (req, res) => {
     const { paymentId } = req.params;
     try {
@@ -218,7 +197,7 @@ export const getDetallePago = async (req, res) => {
     }
 };
 
-// --- HELPERS INTERNOS ---
+// --- HELPERS ---
 
 const getMotivoRechazo = (statusDetail) => {
     const motivos = {
@@ -231,29 +210,19 @@ const getMotivoRechazo = (statusDetail) => {
     return motivos[statusDetail] || "La transacción no pudo ser procesada.";
 };
 
-const getSocketIdFromReference = (ref = "") => ref.includes("|") ? ref.split("|")[1] : "manual";
-
 const obtenerItemsOrden = async (orderId) => {
     try {
-      const { data } = await axios.get(
-        `https://api.mercadopago.com/merchant_orders/${orderId}`,
-        { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
-      );
-  
-      // Mapeamos los items asegurándonos de que el ID sea válido
-      return (data.items || []).map(i => {
-        // Intentamos sacar el ID de varias posibles ubicaciones
-        const idLimpio = i.id || i.external_reference; 
-  
-        return {
-          productId: idLimpio, 
-          name: i.title,
-          price: i.unit_price,
-          quantity: i.quantity
-        };
-      }).filter(item => item.productId && item.productId !== ""); // Eliminamos items sin ID para evitar el crash
+        const { data } = await axios.get(
+            `https://api.mercadopago.com/merchant_orders/${orderId}`,
+            { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
+        );
+        return (data.items || []).map(i => ({
+            productId: i.id || i.external_reference, 
+            name: i.title,
+            price: i.unit_price,
+            quantity: i.quantity
+        })).filter(item => item.productId);
     } catch (error) {
-      console.error("⚠️ Error obteniendo items de la orden:", orderId);
-      return [];
+        return [];
     }
-  };
+};
