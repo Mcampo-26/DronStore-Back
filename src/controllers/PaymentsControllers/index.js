@@ -75,17 +75,19 @@ export const createInteroperableQR = async (req, res) => {
  */
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
-
+    console.log(`📩 Webhook recibido: Tipo [${type}] - ID [${data?.id}]`);
+    
     if (type !== "payment") return res.sendStatus(200);
 
     const paymentId = data.id;
 
     try {
-        // 1. Evitar procesamiento duplicado
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
-        if (ventaExistente) return res.sendStatus(200);
+        if (ventaExistente) {
+            console.log(`⏭️ Pago ${paymentId} ya procesado.`);
+            return res.sendStatus(200);
+        }
 
-        // 2. Obtener detalle del pago desde MP
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
@@ -104,22 +106,14 @@ export const receiveWebhook = async (req, res) => {
 
         if (status === "in_process") return res.sendStatus(200);
 
-        // 3. Extraer IDs de la referencia: "USER_id|SOCKET_id|PROD_id"
         const referenceParts = external_reference ? external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
         const productIdBackup = referenceParts[2]?.replace('PROD_', '');
 
-        if (!userId || userId === "undefined" || userId === "") {
-            console.warn("⚠️ Notificación ignorada: No se encontró userId.");
-            return res.status(200).json({ message: "Ignorado: falta usuario" });
-        }
-
-        // 4. Obtener items
+        // 1. Obtener items con prioridad
         let items = [];
-        if (order?.id) {
-            items = await obtenerItemsOrden(order.id);
-        }
+        if (order?.id) items = await obtenerItemsOrden(order.id);
 
         if (items.length === 0 && additional_info?.items) {
             items = additional_info.items.map(i => ({
@@ -130,9 +124,7 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // Intento C: Usar el Backup ID de la referencia si lo demás falló
         if (items.length === 0) {
-            console.log(`📡 Usando Backup ID de la referencia: ${productIdBackup}`);
             items = [{
                 productId: productIdBackup || "600000000000000000000001", 
                 name: description || "Unidad QDRON",
@@ -141,7 +133,6 @@ export const receiveWebhook = async (req, res) => {
             }];
         }
 
-        // 5. Incrementar contador de ventas
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
@@ -163,17 +154,26 @@ export const receiveWebhook = async (req, res) => {
                 metodoPago: "mercadopago"
             });
 
-            await nuevaVenta.save();
+            // Guardamos la venta
+            const ventaFinal = await nuevaVenta.save();
             
-            // 6. 🔥 DESCUENTO DE STOCK (Ahora sí llamando a la librería importada)
+            // 🔥 IMPORTANTE: Traemos los datos del usuario para que el Admin los vea al toque
+            await ventaFinal.populate('usuario', 'nombre email');
+
+            // Descuento de Stock
             try {
                 await inventoryService.deductStock(items);
-                console.log(`📉 Stock descontado exitosamente para Venta #${counter.value}`);
+                console.log(`📉 Stock actualizado para Venta #${counter.value}`);
             } catch (e) {
-                console.error("❌ Error descontando stock:", e.message);
+                console.error("❌ Error Stock:", e.message);
             }
 
-            // 7. Notificar al Frontend
+            // 🔥 LOG DE SALIDA: Verificamos qué estamos mandando al Frontend
+            console.log("🚀 EMITIENDO VENTA_CREADA:", {
+                nro: ventaFinal.numeroVenta,
+                item: ventaFinal.items[0]?.name
+            });
+
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -181,12 +181,11 @@ export const receiveWebhook = async (req, res) => {
                     transactionId: paymentId,
                     numeroVenta: counter.value,
                     totalAmount: transaction_amount,
-                    socketId: socketId 
+                    socketId: socketId,
+                    venta: ventaFinal // ✅ Ahora sí enviamos el objeto guardado y populado
                 }
             });
 
-            console.log(`✅ Venta #${counter.value} completada.`);
-            
         } else {
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
@@ -201,7 +200,7 @@ export const receiveWebhook = async (req, res) => {
         res.status(200).json({ message: "OK" });
 
     } catch (error) {
-        console.error("❌ Error Crítico en Webhook:", error.message);
+        console.error("❌ Error Crítico Webhook:", error.message);
         res.status(500).json({ message: "Error interno" });
     }
 };
