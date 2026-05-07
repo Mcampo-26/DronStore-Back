@@ -2,34 +2,31 @@ import axios from 'axios';
 import Venta from "../../models/Venta.js"; 
 import Counter from '../../models/Counter.js';
 import appEvents from "../../utilities/eventEmitter.js";
-
-// 🔥 IMPORTACIÓN CORRECTA DE LA LIBRERÍA DE INVENTARIO
 import { inventoryService } from "../../services/stock/inventoryService.js";
 
+// 🔥 ESCUDO DE IDEMPOTENCIA: Memoria RAM para bloquear ráfagas simultáneas
+const pagosEnProceso = new Set();
 
-
+/**
+ * 1. GENERAR QR INTEROPERABLE
+ */
 export const createInteroperableQR = async (req, res) => {
     const { title, items, totalAmount, socketId, userId } = req.body;
 
-    // Validación de seguridad básica
     if (!title || !items || !totalAmount || !socketId || !userId) {
-        return res.status(400).json({ success: false, message: "Datos incompletos (Falta Usuario o Socket)." });
+        return res.status(400).json({ success: false, message: "Datos incompletos." });
     }
 
     const baseUrl = process.env.BACKEND_PUBLIC_URL;
-
-    // Backup del ID del producto
     const backupProductId = items[0]?.productId;
 
-    // 🕒 CONFIGURACIÓN DE EXPIRACIÓN (40 SEGUNDOS EXACTOS)
+    // 🕒 EXPIRACIÓN 40 SEG
     const now = new Date();
     const expirationDate = new Date(now.getTime() + 40000).toISOString();
-
-    // Limpiamos el título para la referencia (quitamos pipes si los hay)
     const cleanTitle = title.replace(/[|]/g, '-');
 
     const orderData = {
-        // 🔥 BLINDAJE TOTAL: Metemos el nombre real al final de la referencia
+        // INYECCIÓN DE NOMBRE EN LA REFERENCIA PARA EL WEBHOOK
         external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}|NAME_${cleanTitle}`,
         title: title,
         description: title, 
@@ -51,7 +48,6 @@ export const createInteroperableQR = async (req, res) => {
 
     try {
         const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${process.env.COLLECTOR_ID}/pos/${process.env.EXTERNAL_POS_ID}/qrs`;
-
         const response = await axios.put(url, orderData, {
             headers: {
                 Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}`,
@@ -66,32 +62,41 @@ export const createInteroperableQR = async (req, res) => {
             socketId,
             expires_at: expirationDate
         });
-        
     } catch (error) {
         console.error("❌ Error MP QR:", error.response?.data || error.message);
-        res.status(500).json({ 
-            success: false, 
-            error: error.response?.data || "Error al conectar con Mercado Pago" 
-        });
+        res.status(500).json({ success: false, error: "Error al conectar con Mercado Pago" });
     }
 };
 
- 
-
+/**
+ * 2. WEBHOOK: RECIBIR NOTIFICACIÓN (CON IDEMPOTENCIA)
+ */
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
     const paymentId = data?.id || req.query.id || req.query['data.id'];
 
+    if (!paymentId) return res.sendStatus(200);
+
+    // 🛡️ PASO 1 IDEMPOTENCIA: Bloqueo de ráfaga en RAM
+    if (pagosEnProceso.has(paymentId)) {
+        console.log(`⏳ Bloqueando notificación duplicada en ráfaga: ${paymentId}`);
+        return res.sendStatus(200); 
+    }
+    pagosEnProceso.add(paymentId);
+
     console.log(`📩 Webhook recibido: Tipo [${type || req.query.topic}] - ID [${paymentId}]`);
     
     if (type !== "payment" && req.query.topic !== "payment") {
+        pagosEnProceso.delete(paymentId);
         return res.sendStatus(200);
     }
 
     try {
+        // 🛡️ PASO 2 IDEMPOTENCIA: Verificación en Base de Datos
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) {
-            console.log(`⏭️ Pago ${paymentId} ya procesado anteriormente.`);
+            console.log(`⏭️ Pago ${paymentId} ya procesado anteriormente en DB.`);
+            pagosEnProceso.delete(paymentId);
             return res.sendStatus(200);
         }
 
@@ -101,21 +106,16 @@ export const receiveWebhook = async (req, res) => {
         );
 
         const p = response.data;
+        if (p.status === "in_process") {
+            pagosEnProceso.delete(paymentId);
+            return res.sendStatus(200);
+        }
 
-        console.log("🔍 [DEBUG MP] Campos de texto:", {
-            description: p.description,
-            additional_info_title: p.additional_info?.items?.[0]?.title,
-            external_reference: p.external_reference
-        });
-
-        if (p.status === "in_process") return res.sendStatus(200);
-
-        // 3. EXTRAER DATOS DE LA REFERENCIA (Aquí rescatamos el nombre inyectado)
+        // Extracción de datos de referencia
         const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
         const productIdBackup = referenceParts[2]?.replace('PROD_', '');
-        // 🔥 RESCATE DEL NOMBRE REAL DESDE LA REFERENCIA
         const productNameBackup = referenceParts[3]?.replace('NAME_', '');
 
         let items = [];
@@ -130,19 +130,11 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // 🔥 LÓGICA DE RESCATE POR REFERENCIA (Anti "Producto QDRON Store")
-        const esNombreGenerico = (n) => 
-            !n || 
-            n.toLowerCase().includes("qr") || 
-            n.toLowerCase().includes("qdron store") || 
-            n.toLowerCase().includes("adquisición");
+        // Rescate de nombre (Evita genéricos)
+        const esNombreGenerico = (n) => !n || n.toLowerCase().includes("qr") || n.toLowerCase().includes("qdron store");
 
         if (items.length === 0 || esNombreGenerico(items[0]?.name)) {
-            console.log("🛠️ Nombre genérico detectado. Rescatando desde REFERENCIA EXTERNA...");
-            
-            // Si el nombre en la referencia existe, es nuestra "verdad absoluta"
-            const nombreRescatado = productNameBackup || p.description || "Unidad Técnica Sincronizada";
-
+            const nombreRescatado = productNameBackup || p.description || "Unidad QDRON Sincronizada";
             items = [{
                 productId: productIdBackup || "600000000000000000000001", 
                 name: nombreRescatado.replace(/Adquisición QDRON:|Adquisición:/gi, '').trim(),
@@ -159,9 +151,7 @@ export const receiveWebhook = async (req, res) => {
 
         if (p.status === "approved") {
             const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia', 'credit_card', 'debit_card']; 
-            const metodoFinal = metodosPermitidos.includes(p.payment_method_id) 
-                                ? p.payment_method_id 
-                                : 'mercadopago';
+            const metodoFinal = metodosPermitidos.includes(p.payment_method_id) ? p.payment_method_id : 'mercadopago';
 
             const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
@@ -186,7 +176,7 @@ export const receiveWebhook = async (req, res) => {
                 console.error("❌ Error Stock:", e.message);
             }
 
-            console.log(`🚀 VENTA_CREADA EXITOSA: #${ventaFinal.numeroVenta} - ${items[0]?.name}`);
+            console.log(`🚀 VENTA_CREADA: #${ventaFinal.numeroVenta} - ${items[0]?.name}`);
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -210,15 +200,20 @@ export const receiveWebhook = async (req, res) => {
             });
         }
 
+        // 🔥 LIBERACIÓN: Limpiamos la RAM al terminar el proceso exitoso
+        pagosEnProceso.delete(paymentId);
         res.status(200).json({ message: "OK" });
 
     } catch (error) {
         console.error("❌ Error Crítico Webhook:", error.message);
+        pagosEnProceso.delete(paymentId); // Liberamos en caso de error para permitir reintentos legítimos
         res.status(200).json({ message: "Error procesado" });
     }
 };
- 
 
+/**
+ * 3. OBTENER DETALLE DEL PAGO
+ */
 export const getDetallePago = async (req, res) => {
     const { paymentId } = req.params;
     try {
