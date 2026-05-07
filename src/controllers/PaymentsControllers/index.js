@@ -70,53 +70,50 @@ export const createInteroperableQR = async (req, res) => {
     }
 };
 
-/**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
- */
 export const receiveWebhook = async (req, res) => {
+    // Normalizamos la entrada de datos de Mercado Pago
     const { type, data } = req.body;
-    console.log(`📩 Webhook recibido: Tipo [${type}] - ID [${data?.id}]`);
-    
-    if (type !== "payment") return res.sendStatus(200);
+    const paymentId = data?.id || req.query.id;
 
-    const paymentId = data.id;
+    console.log(`📩 Webhook recibido: Tipo [${type}] - ID [${paymentId}]`);
+    
+    // Solo procesamos notificaciones de pago
+    if (type !== "payment" && req.query.topic !== "payment") {
+        return res.sendStatus(200);
+    }
 
     try {
+        // 1. Evitar procesamiento duplicado (Idempotencia)
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) {
             console.log(`⏭️ Pago ${paymentId} ya procesado.`);
             return res.sendStatus(200);
         }
 
+        // 2. Obtener detalle oficial del pago desde la API de MP
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
         );
 
-        const { 
-            status, 
-            transaction_amount, 
-            date_created, 
-            external_reference, 
-            status_detail, 
-            order, 
-            description,
-            additional_info 
-        } = response.data;
+        const p = response.data; // Alias para los datos del pago
+        if (p.status === "in_process") return res.sendStatus(200);
 
-        if (status === "in_process") return res.sendStatus(200);
-
-        const referenceParts = external_reference ? external_reference.split('|') : [];
+        // 3. Extraer IDs de la referencia externa
+        const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
         const productIdBackup = referenceParts[2]?.replace('PROD_', '');
 
-        // 1. Obtener items con prioridad
+        // 4. Lógica Maestra de Items (Para evitar el "Código QR")
         let items = [];
-        if (order?.id) items = await obtenerItemsOrden(order.id);
+        
+        // Intento A: Buscar en la orden mercantil
+        if (p.order?.id) items = await obtenerItemsOrden(p.order.id);
 
-        if (items.length === 0 && additional_info?.items) {
-            items = additional_info.items.map(i => ({
+        // Intento B: Buscar en la info adicional del pago
+        if (items.length === 0 && p.additional_info?.items) {
+            items = p.additional_info.items.map(i => ({
                 productId: i.id,
                 name: i.title,
                 price: parseFloat(i.unit_price),
@@ -124,43 +121,48 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        if (items.length === 0) {
+        // Intento C: Rescate total (Si sigue diciendo "Código QR" o está vacío)
+        if (items.length === 0 || (items[0]?.name && items[0].name.toLowerCase().includes("qr"))) {
+            console.log("🛠️ Limpiando nombre genérico detectado...");
             items = [{
                 productId: productIdBackup || "600000000000000000000001", 
-                name: description || "Unidad QDRON",
-                price: transaction_amount,
+                // Usamos la descripción del pago si es válida, sino el backup
+                name: (p.description && !p.description.toLowerCase().includes("qr")) 
+                       ? p.description 
+                       : "Unidad QDRON Especial",
+                price: p.transaction_amount,
                 quantity: 1
             }];
         }
 
+        // 5. Contador de ventas correlativo
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
             { returnDocument: 'after', upsert: true }
         );
 
-        if (status === "approved") {
+        if (p.status === "approved") {
             const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
                 usuario: userId,
                 transactionId: paymentId,
-                externalReference: external_reference,
-                totalAmount: transaction_amount,
-                status,
-                fechaVenta: new Date(date_created || Date.now()),
+                externalReference: p.external_reference,
+                totalAmount: p.transaction_amount,
+                status: p.status,
+                fechaVenta: new Date(p.date_created || Date.now()),
                 items,
                 socketId,
                 impresa: false,
-                metodoPago: "mercadopago"
+                metodoPago: p.payment_method_id || "mercadopago"
             });
 
-            // Guardamos la venta
             const ventaFinal = await nuevaVenta.save();
             
-            // 🔥 IMPORTANTE: Traemos los datos del usuario para que el Admin los vea al toque
+            // Populamos para que el Admin vea el nombre del usuario en el SSE
             await ventaFinal.populate('usuario', 'nombre email');
 
-            // Descuento de Stock
+            // 6. Descuento de Stock
             try {
                 await inventoryService.deductStock(items);
                 console.log(`📉 Stock actualizado para Venta #${counter.value}`);
@@ -168,30 +170,27 @@ export const receiveWebhook = async (req, res) => {
                 console.error("❌ Error Stock:", e.message);
             }
 
-            // 🔥 LOG DE SALIDA: Verificamos qué estamos mandando al Frontend
-            console.log("🚀 EMITIENDO VENTA_CREADA:", {
-                nro: ventaFinal.numeroVenta,
-                item: ventaFinal.items[0]?.name
-            });
-
+            // 7. 🔥 EMISIÓN VÍA SSE (appEvents)
+            console.log(`🚀 Enviando VENTA_CREADA: #${ventaFinal.numeroVenta} - ${items[0]?.name}`);
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
                     status: 'approved',
                     transactionId: paymentId,
                     numeroVenta: counter.value,
-                    totalAmount: transaction_amount,
+                    totalAmount: p.transaction_amount,
                     socketId: socketId,
-                    venta: ventaFinal // ✅ Ahora sí enviamos el objeto guardado y populado
+                    venta: ventaFinal 
                 }
             });
 
         } else {
+            // Caso de pago rechazado
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
                     status: 'rejected',
-                    message: getMotivoRechazo(status_detail),
+                    message: getMotivoRechazo(p.status_detail),
                     socketId: socketId
                 }
             });
@@ -201,7 +200,8 @@ export const receiveWebhook = async (req, res) => {
 
     } catch (error) {
         console.error("❌ Error Crítico Webhook:", error.message);
-        res.status(500).json({ message: "Error interno" });
+        // Respondemos 200 de todas formas para que MP deje de insistir si es un error de código
+        res.status(200).json({ message: "Error interno procesado" });
     }
 };
 
