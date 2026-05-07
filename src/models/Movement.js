@@ -5,7 +5,7 @@ const MovimientoSchema = new Schema({
   loteCodigo: { type: String, required: true }, // A qué lote afectó
   tipo: { 
     type: String, 
-    enum: ['ENTRADA', 'SALIDA', 'AJUSTE', 'VENCIDO', 'DEVOLUCION'], 
+    enum: ['ENTRADA', 'SALIDA', 'AJUSTE', 'VENCIDO', 'DEVOLUCION', 'AJUSTE_NEGATIVO'], // Agregamos el guion bajo
     required: true 
   },
   cantidad: { type: Number, required: true },
