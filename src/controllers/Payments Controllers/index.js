@@ -1,12 +1,10 @@
 import axios from 'axios';
 import Venta from "../../models/Venta.js"; 
 import Counter from '../../models/Counter.js';
-import { descontarStockPorItems } from "../../helpers/stock.js";
 import appEvents from "../../utilities/eventEmitter.js";
 
-/**
- * 1. GENERAR QR INTEROPERABLE
- */
+// 🔥 IMPORTACIÓN CORRECTA DE LA LIBRERÍA DE INVENTARIO
+import { inventoryService } from "../../lib/inventoryService.js";
 
 /**
  * 1. GENERAR QR INTEROPERABLE
@@ -15,7 +13,7 @@ import appEvents from "../../utilities/eventEmitter.js";
 export const createInteroperableQR = async (req, res) => {
     const { title, items, totalAmount, expirationDate, socketId, userId } = req.body;
 
-    // 1. Validación de seguridad básica
+    // Validación de seguridad básica
     if (!title || !items || !totalAmount || !socketId || !userId) {
         return res.status(400).json({ success: false, message: "Datos incompletos (Falta Usuario o Socket)." });
     }
@@ -24,11 +22,10 @@ export const createInteroperableQR = async (req, res) => {
 
     // 🔥 BACKUP ESTRATÉGICO: 
     // Extraemos el ID del producto desde los items que vienen del Store.
-    // Esto nos salvará si Mercado Pago no devuelve el detalle de la orden en el Webhook.
     const backupProductId = items[0]?.productId;
 
     const orderData = {
-        // 2. Blindamos la referencia: USER | SOCKET | PRODUCTO
+        // Blindamos la referencia: USER | SOCKET | PRODUCTO
         external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}`,
         title,
         description: "Adquisición en QDRON Store",
@@ -36,7 +33,7 @@ export const createInteroperableQR = async (req, res) => {
         total_amount: totalAmount,
         expiration_date: expirationDate,
         items: items.map((item) => ({
-            id: item.productId, // ID del Store
+            id: item.productId, 
             sku_number: item.sku || `SKU_${item.productId}`,
             category: "marketplace",
             title: item.name,
@@ -58,7 +55,6 @@ export const createInteroperableQR = async (req, res) => {
             },
         });
 
-        // 3. Respuesta al Frontend
         res.status(200).json({
             success: true,
             qr_data: response.data.qr_data,
@@ -80,7 +76,6 @@ export const createInteroperableQR = async (req, res) => {
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
 
-    // Solo procesamos notificaciones de pago
     if (type !== "payment") return res.sendStatus(200);
 
     const paymentId = data.id;
@@ -109,27 +104,23 @@ export const receiveWebhook = async (req, res) => {
 
         if (status === "in_process") return res.sendStatus(200);
 
-        // 3. Extraer IDs de la referencia blindada: "USER_id|SOCKET_id|PROD_id"
+        // 3. Extraer IDs de la referencia: "USER_id|SOCKET_id|PROD_id"
         const referenceParts = external_reference ? external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
-        const productIdBackup = referenceParts[2]?.replace('PROD_', ''); // 🔥 NUESTRO SEGURO DE VIDA
+        const productIdBackup = referenceParts[2]?.replace('PROD_', '');
 
-        // Escudo contra notificaciones sin usuario
         if (!userId || userId === "undefined" || userId === "") {
             console.warn("⚠️ Notificación ignorada: No se encontró userId.");
             return res.status(200).json({ message: "Ignorado: falta usuario" });
         }
 
-        // 4. Obtener items (Intentamos por varios métodos para no fallar)
+        // 4. Obtener items
         let items = [];
-
-        // Intento A: Merchant Order oficial
         if (order?.id) {
             items = await obtenerItemsOrden(order.id);
         }
 
-        // Intento B: Additional Info (Respaldo de MP)
         if (items.length === 0 && additional_info?.items) {
             items = additional_info.items.map(i => ({
                 productId: i.id,
@@ -139,7 +130,7 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // 🔥 Intento C: PLAN B BLINDADO (Usa el ID que mandamos desde el Store)
+        // Intento C: Usar el Backup ID de la referencia si lo demás falló
         if (items.length === 0) {
             console.log(`📡 Usando Backup ID de la referencia: ${productIdBackup}`);
             items = [{
@@ -174,16 +165,15 @@ export const receiveWebhook = async (req, res) => {
 
             await nuevaVenta.save();
             
-            // 6. DESCUENTO DE STOCK (Usando la nueva Service Layer)
+            // 6. 🔥 DESCUENTO DE STOCK (Ahora sí llamando a la librería importada)
             try {
-                // Ahora items.productId tendrá el ID real de MongoDB
                 await inventoryService.deductStock(items);
                 console.log(`📉 Stock descontado exitosamente para Venta #${counter.value}`);
             } catch (e) {
                 console.error("❌ Error descontando stock:", e.message);
             }
 
-            // 7. Notificar al Frontend (SSE)
+            // 7. Notificar al Frontend
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -198,7 +188,6 @@ export const receiveWebhook = async (req, res) => {
             console.log(`✅ Venta #${counter.value} completada.`);
             
         } else {
-            // Notificar rechazo al socket específico
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
@@ -216,6 +205,7 @@ export const receiveWebhook = async (req, res) => {
         res.status(500).json({ message: "Error interno" });
     }
 };
+
 /**
  * 3. OBTENER DETALLE DEL PAGO
  */
