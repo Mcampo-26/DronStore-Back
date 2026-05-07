@@ -18,18 +18,21 @@ export const createInteroperableQR = async (req, res) => {
 
     const baseUrl = process.env.BACKEND_PUBLIC_URL;
 
-    // 🔥 BACKUP ESTRATÉGICO: 
+    // Backup del ID del producto
     const backupProductId = items[0]?.productId;
 
-    // 🕒 CONFIGURACIÓN DE EXPIRACIÓN (40 SEGUNDOS)
-    // Creamos una fecha 40 segundos en el futuro
+    // 🕒 CONFIGURACIÓN DE EXPIRACIÓN (40 SEGUNDOS EXACTOS)
     const now = new Date();
     const expirationDate = new Date(now.getTime() + 40000).toISOString();
 
+    // Limpiamos el título para la referencia (quitamos pipes si los hay)
+    const cleanTitle = title.replace(/[|]/g, '-');
+
     const orderData = {
-        external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}`,
+        // 🔥 BLINDAJE TOTAL: Metemos el nombre real al final de la referencia
+        external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}|NAME_${cleanTitle}`,
         title: title,
-        description: title, // Blindaje 1
+        description: title, 
         notification_url: `${baseUrl}/payments/webhook`,
         total_amount: totalAmount,
         expiration_date: expirationDate,
@@ -37,7 +40,7 @@ export const createInteroperableQR = async (req, res) => {
             id: item.productId, 
             sku_number: item.sku || `SKU_${item.productId}`,
             category: "marketplace",
-            title: item.name, // 🔥 Blindaje 2: Aquí debe ir el nombre real
+            title: item.name,
             unit_price: item.price,
             quantity: item.quantity,
             unit_measure: "unit",
@@ -61,7 +64,7 @@ export const createInteroperableQR = async (req, res) => {
             qr_data: response.data.qr_data,
             order_id: response.data.in_store_order_id,
             socketId,
-            expires_at: expirationDate // Informamos al front cuándo expira
+            expires_at: expirationDate
         });
         
     } catch (error) {
@@ -73,33 +76,25 @@ export const createInteroperableQR = async (req, res) => {
     }
 };
 
-
  
-/**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
- * Versión optimizada con búsqueda profunda de nombres para evitar "Producto QDRON Store"
- */
+
 export const receiveWebhook = async (req, res) => {
-    // Normalizamos la entrada de datos (Cuerpo o Query)
     const { type, data } = req.body;
     const paymentId = data?.id || req.query.id || req.query['data.id'];
 
     console.log(`📩 Webhook recibido: Tipo [${type || req.query.topic}] - ID [${paymentId}]`);
     
-    // Solo procesamos pagos
     if (type !== "payment" && req.query.topic !== "payment") {
         return res.sendStatus(200);
     }
 
     try {
-        // 1. Evitar procesamiento duplicado
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) {
             console.log(`⏭️ Pago ${paymentId} ya procesado anteriormente.`);
             return res.sendStatus(200);
         }
 
-        // 2. Obtener detalle oficial de Mercado Pago
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
@@ -107,27 +102,25 @@ export const receiveWebhook = async (req, res) => {
 
         const p = response.data;
 
-        // LOG DE DEPURACIÓN PROFUNDA (Revisa esto en Heroku)
         console.log("🔍 [DEBUG MP] Campos de texto:", {
             description: p.description,
-            statement: p.statement_descriptor,
             additional_info_title: p.additional_info?.items?.[0]?.title,
-            order_id: p.order?.id
+            external_reference: p.external_reference
         });
 
         if (p.status === "in_process") return res.sendStatus(200);
 
-        // 3. Extraer IDs de la referencia externa
+        // 3. EXTRAER DATOS DE LA REFERENCIA (Aquí rescatamos el nombre inyectado)
         const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
         const productIdBackup = referenceParts[2]?.replace('PROD_', '');
+        // 🔥 RESCATE DEL NOMBRE REAL DESDE LA REFERENCIA
+        const productNameBackup = referenceParts[3]?.replace('NAME_', '');
 
-        // 4. Lógica de Items con RESCATE DE NOMBRE REAL
         let items = [];
         if (p.order?.id) items = await obtenerItemsOrden(p.order.id);
 
-        // Intento B: additional_info (Items directos del pago)
         if (items.length === 0 && p.additional_info?.items?.length > 0) {
             items = p.additional_info.items.map(i => ({
                 productId: i.id,
@@ -137,7 +130,7 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // 🔥 RESCATE DE EMERGENCIA: Si el nombre es genérico o nulo
+        // 🔥 LÓGICA DE RESCATE POR REFERENCIA (Anti "Producto QDRON Store")
         const esNombreGenerico = (n) => 
             !n || 
             n.toLowerCase().includes("qr") || 
@@ -145,16 +138,10 @@ export const receiveWebhook = async (req, res) => {
             n.toLowerCase().includes("adquisición");
 
         if (items.length === 0 || esNombreGenerico(items[0]?.name)) {
-            console.log("🛠️ Nombre genérico detectado. Aplicando búsqueda profunda de rescate...");
+            console.log("🛠️ Nombre genérico detectado. Rescatando desde REFERENCIA EXTERNA...");
             
-            // Prioridad de búsqueda: 1. Descripción del pago | 2. Nombre manual
-            let nombreRescatado = "Unidad QDRON Sincronizada";
-
-            if (p.description && !esNombreGenerico(p.description)) {
-                nombreRescatado = p.description;
-            } else if (p.additional_info?.items?.[0]?.title && !esNombreGenerico(p.additional_info.items[0].title)) {
-                nombreRescatado = p.additional_info.items[0].title;
-            }
+            // Si el nombre en la referencia existe, es nuestra "verdad absoluta"
+            const nombreRescatado = productNameBackup || p.description || "Unidad Técnica Sincronizada";
 
             items = [{
                 productId: productIdBackup || "600000000000000000000001", 
@@ -164,7 +151,6 @@ export const receiveWebhook = async (req, res) => {
             }];
         }
 
-        // 5. Contador de ventas
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
@@ -172,7 +158,6 @@ export const receiveWebhook = async (req, res) => {
         );
 
         if (p.status === "approved") {
-            // Normalización de método de pago para evitar errores de validación
             const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia', 'credit_card', 'debit_card']; 
             const metodoFinal = metodosPermitidos.includes(p.payment_method_id) 
                                 ? p.payment_method_id 
@@ -195,15 +180,12 @@ export const receiveWebhook = async (req, res) => {
             const ventaFinal = await nuevaVenta.save();
             await ventaFinal.populate('usuario', 'nombre email');
 
-            // 6. Descuento de Stock
             try {
                 await inventoryService.deductStock(items);
-                console.log(`📉 Stock descontado para Venta #${counter.value}`);
             } catch (e) {
                 console.error("❌ Error Stock:", e.message);
             }
 
-            // 7. Emisión al Frontend vía SSE
             console.log(`🚀 VENTA_CREADA EXITOSA: #${ventaFinal.numeroVenta} - ${items[0]?.name}`);
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
@@ -218,7 +200,6 @@ export const receiveWebhook = async (req, res) => {
             });
 
         } else {
-            // Pago rechazado
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
