@@ -49,6 +49,8 @@ export const updateStock = async (req, res) => {
     }
 
     // 3. Persistencia de datos
+    // Marcamos 'lotes' como modificado para asegurar que Mongoose detecte cambios profundos
+    stockDoc.markModified('lotes');
     await stockDoc.save();
 
     const newMovement = new Movement({
@@ -63,10 +65,10 @@ export const updateStock = async (req, res) => {
     await newMovement.save();
 
     // 4. Sincronización con el modelo de Producto (Stock total)
+    // Usamos el stockDoc.cantidadTotal que se actualizó en el pre('save') del modelo
     await Product.findByIdAndUpdate(id, { stock: stockDoc.cantidadTotal });
 
     // 5. ⚡️ EMISIÓN EN TIEMPO REAL
-    // Enviamos el payload completo para que el frontend no necesite hacer otro GET si no quiere
     appEvents.emit('entity-updated', { 
       type: 'STOCK_UPDATED', 
       payload: { 
@@ -114,18 +116,33 @@ export const deleteBatch = async (req, res) => {
   try {
     const { productId, batchCode } = req.params;
 
-    // Usamos findOneAndUpdate con returnDocument: 'after' para obtener el doc actualizado
-    const stockDoc = await Stock.findOneAndUpdate(
-      { producto: productId },
-      { $pull: { lotes: { codigo: batchCode } } },
-      { returnDocument: 'after' } 
-    );
+    // Buscamos el documento para aplicar la lógica de guardado de Mongoose
+    const stockDoc = await Stock.findOne({ producto: productId });
 
     if (!stockDoc) {
       return res.status(404).json({ success: false, msg: "Producto no encontrado en inventario" });
     }
 
-    // Sincronizar el total tras la eliminación del lote
+    // Filtramos los lotes para eliminar el indicado
+    stockDoc.lotes = stockDoc.lotes.filter(l => l.codigo !== batchCode);
+    
+    // Al modificar el array directamente, forzamos la marca de modificado
+    stockDoc.markModified('lotes');
+    
+    // Al ejecutar .save(), se dispara el pre-save que recalcula cantidadTotal
+    await stockDoc.save();
+
+    // Registrar movimiento de ajuste (opcional pero recomendado para auditoría)
+    const removalMovement = new Movement({
+      productoId: productId,
+      loteCodigo: batchCode,
+      tipo: 'AJUSTE_NEGATIVO', 
+      cantidad: 0,
+      notas: `Lote ${batchCode} eliminado manualmente`
+    });
+    await removalMovement.save();
+
+    // Sincronizar el total tras la eliminación del lote con el modelo Producto
     await Product.findByIdAndUpdate(productId, { stock: stockDoc.cantidadTotal });
 
     // ⚡️ EMISIÓN EN TIEMPO REAL
