@@ -63,7 +63,6 @@ export const createInteroperableQR = async (req, res) => {
  * 2. WEBHOOK: RECIBIR NOTIFICACIÓN
  */
 export const receiveWebhook = async (req, res) => {
-    // Usamos el sistema de eventos/SSE de tu app para notificar al front
     const { type, data } = req.body;
 
     if (type !== "payment") return res.sendStatus(200);
@@ -71,11 +70,9 @@ export const receiveWebhook = async (req, res) => {
     const paymentId = data.id;
 
     try {
-        // Evitar duplicados
         const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) return res.sendStatus(200);
 
-        // Obtener datos del pago de MP
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
@@ -85,25 +82,26 @@ export const receiveWebhook = async (req, res) => {
 
         if (status === "in_process") return res.sendStatus(200);
 
-        // Extraer IDs de la referencia: "USER_123|SOCKET_456"
+        // Extraer IDs de la referencia
         const referenceParts = external_reference ? external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
-
+        if (!userId || userId === "undefined" || userId === "") {
+            console.warn("⚠️ Recibida notificación antigua o sin ID de usuario. Ignorando para evitar crash.");
+            return res.status(200).json({ message: "Notificación ignorada: falta usuario" });
+        }
         const items = order?.id ? await obtenerItemsOrden(order.id) : [];
 
-        // Reservar número de venta
         const counter = await Counter.findOneAndUpdate(
             { name: "numeroVenta" },
             { $inc: { value: 1 } },
-            { new: true, upsert: true }
+            { returnDocument: 'after', upsert: true }
         );
 
         if (status === "approved") {
-            // Guardar Venta
             const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
-                usuario: userId, // <--- ASIGNAMOS EL USUARIO (Soluciona el error 500)
+                usuario: userId,
                 transactionId: paymentId,
                 externalReference: external_reference,
                 totalAmount: transaction_amount,
@@ -116,18 +114,37 @@ export const receiveWebhook = async (req, res) => {
 
             await nuevaVenta.save();
             
-            // Descontar Stock
             try {
                 await descontarStockPorItems(items);
             } catch (e) {
                 console.error("❌ Error stock:", e.message);
             }
 
-            // Aquí deberías emitir tu evento SSE/Socket para cerrar el QR en el front
-            console.log(`✅ Venta #${counter.value} completada para usuario ${userId}`);
+            // 🔥 AQUÍ EMITIMOS EL ÉXITO PARA EL FRONTEND
+            appEvents.emit('entity-updated', {
+                type: 'VENTA_CREADA',
+                payload: {
+                    status: 'approved',
+                    transactionId: paymentId,
+                    numeroVenta: counter.value,
+                    totalAmount: transaction_amount,
+                    socketId: socketId // Para que el front sepa que es SU compra
+                }
+            });
+
+            console.log(`✅ Venta #${counter.value} emitida via appEvents`);
             
         } else {
-            console.log(`❌ Pago rechazado: ${status_detail}`);
+            // 🔥 TAMBIÉN EMITIMOS EL RECHAZO
+            appEvents.emit('entity-updated', {
+                type: 'VENTA_RECHAZADA',
+                payload: {
+                    status: 'rejected',
+                    message: getMotivoRechazo(status_detail),
+                    socketId: socketId
+                }
+            });
+            console.log(`❌ Pago rechazado emitido: ${status_detail}`);
         }
 
         res.status(200).json({ message: "OK" });
@@ -137,7 +154,6 @@ export const receiveWebhook = async (req, res) => {
         res.status(500).json({ message: "Error" });
     }
 };
-
 /**
  * 3. OBTENER DETALLE DEL PAGO (Para auditoría)
  */
