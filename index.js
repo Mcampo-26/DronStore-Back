@@ -17,7 +17,7 @@ import routerCategory from './src/routes/Category/index.js'
 import routerVentas from './src/routes/Ventas/index.js'
 import routerPayments from './src/routes/Payments/index.js';
 import routerCart from './src/routes/Cart/index.js';
-import routerLogs  from './src/routes/Logs/index.js'
+import routerLogs  from './src/routes/Log/index.js'
 
 const app = express();
 
