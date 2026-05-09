@@ -1,24 +1,20 @@
 import mongoose from 'mongoose';
 
-// Usamos la variable de entorno que definimos en el .env
-const MONGODB_URI = process.env.MONGO_URI; // Que coincida con tu .env
+const MONGODB_URI = process.env.MONGO_URI;
 
 if (!MONGODB_URI) {
-  throw new Error(
-    'Por favor, definí la variable MONGO_URI en el archivo .env'
-  );
+  throw new Error('Por favor, definí la variable MONGO_URI en el archivo .env');
 }
 
 const dbConnect = async () => {
-  // En Express, verificamos el estado de la conexión directamente desde mongoose
   if (mongoose.connection.readyState >= 1) {
     return;
   }
 
   const opts = {
-    bufferCommands: false,
-    maxPoolSize: 10,       // Máximo de conexiones simultáneas
-    minPoolSize: 5,        // Mantiene 5 conexiones abiertas para evitar lag
+    bufferCommands: true,  // ✅ CAMBIADO A TRUE (Esto soluciona tu error)
+    maxPoolSize: 10,
+    minPoolSize: 5,
     connectTimeoutMS: 10000,
     socketTimeoutMS: 45000,
   };
@@ -29,7 +25,6 @@ const dbConnect = async () => {
     return conn;
   } catch (e) {
     console.error("❌ Error en la conexión a MongoDB:", e.message);
-    // En el backend, si falla la base de datos, solemos cerrar el proceso
     process.exit(1);
   }
 };

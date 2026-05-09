@@ -2,63 +2,57 @@ import User from '../../models/User.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import Log from '../../models/Log.js';
+import appEvents from "../../utilities/eventEmitter.js";
 
+// LOGIN
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const io = req.app?.locals?.io; // Instancia de Socket.io si la usas
 
-    // 1. Buscamos al usuario y traemos el password (que está oculto por defecto)
-    // Quitamos el .populate('role') para evitar el MissingSchemaError
+    // Buscamos al usuario incluyendo el password oculto
     const usuario = await User.findOne({ email }).select('+password');
 
-    // 2. Si no existe el usuario
     if (!usuario) {
-      console.log("Login fallido: Usuario no encontrado ->", email);
-      return res.status(401).json({ 
-        success: false, 
-        message: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ success: false, message: "Credenciales inválidas" });
     }
 
-    // 3. Comparamos la contraseña enviada con la de la base de datos
+    // Verificación de contraseña
     const isMatch = await bcrypt.compare(password, usuario.password);
     
     if (!isMatch) {
-      console.log("Login fallido: Contraseña incorrecta para ->", email);
-      return res.status(401).json({ 
-        success: false, 
-        message: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ success: false, message: "Credenciales inválidas" });
     }
 
-    // 4. Generamos un ID de sesión único y el Token JWT
+    // Generación de Token y Sesión
     const sessionId = crypto.randomUUID();
     const token = jwt.sign(
-      { 
-        id: usuario._id, 
-        nombre: usuario.nombre, 
-        sessionId 
-      }, 
+      { id: usuario._id, nombre: usuario.nombre, sessionId }, 
       process.env.JWT_SECRET || 'secret_provisorio', 
       { expiresIn: "8h" }
     );
 
-    // 5. Opcional: Emitir evento por Socket (si tienes el frontend escuchando)
-    if (io) {
-      io.to(`user:${usuario._id}`).emit("auth:login", {
-        sessionId,
-        at: new Date()
-      });
-    }
+    // --- SISTEMA DE AUDITORÍA ---
+    // 1. Grabamos el log en la base de datos
+    const nuevoLog = await Log.create({
+      usuario: usuario._id,
+      accion: "AUTH_LOGIN",
+      detalles: `Inicio de sesión exitoso. Terminal: ${sessionId.slice(0, 8)}`
+    });
 
-    // 6. Limpiamos el objeto usuario para no enviar el password al frontend
+    // 2. Populamos con el usuario para que la Consola de Logs tenga el nombre/email
+    const logPopulado = await Log.findById(nuevoLog._id).populate('usuario', 'nombre email');
+
+    // 3. Emitimos el evento para actualización en tiempo real en el frontend
+    appEvents.emit('entity-updated', { 
+      type: 'LOG_CREATED', 
+      payload: logPopulado 
+    });
+
+    // Limpieza de datos sensibles
     const usuarioFinal = usuario.toObject();
     delete usuarioFinal.password;
 
-    console.log("✅ Login exitoso:", usuario.email);
-
-    // 7. Respuesta final
     res.json({ 
       success: true,
       token, 
@@ -67,20 +61,41 @@ export const login = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Error crítico en Login:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: "Error interno del servidor", 
-      error: error.message 
-    });
+    console.error("❌ Error en Login:", error);
+    res.status(500).json({ success: false, message: "Error interno del servidor" });
   }
 };
 
-// También te dejo el logout para que el archivo esté completo
+// LOGOUT
+// controllers/authController.js
 export const logout = async (req, res) => {
   try {
-    res.json({ success: true, message: "Sesión cerrada correctamente" });
+    const { usuarioId } = req.body; // Enviamos el ID desde el frente si no usas protect
+
+    if (usuarioId) {
+      // 1. Creamos el registro en la DB
+      const nuevoLog = await Log.create({
+        usuario: usuarioId,
+        accion: "AUTH_LOGOUT",
+        detalles: "Sesión finalizada por el usuario.",
+        ip: req.ip
+      });
+
+      // 2. Populamos para que el Hangar de Logs muestre el nombre real
+      const logPopulado = await Log.findById(nuevoLog._id).populate('usuario', 'nombre email');
+      
+      // 3. Emitimos el evento para que la página se actualice SOLA (SSE)
+      if (appEvents) {
+        appEvents.emit('entity-updated', { 
+          type: 'LOG_CREATED', 
+          payload: logPopulado 
+        });
+      }
+    }
+
+    res.json({ success: true, message: "Log grabado y sesión cerrada" });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Error al cerrar sesión" });
+    console.error("Error al grabar log de salida:", error);
+    res.status(500).json({ success: false });
   }
 };
