@@ -32,11 +32,10 @@ router.get('/', sseCors, (req, res) => {
     res.write(': ok\n\n');
 
     const keepAlive = setInterval(() => {
-        // ✅ Cambio 1: Verificar res.writable antes de escribir
-        if (res.writable && !res.writableEnded) {
-            res.write(': keep-alive\n\n');
+        if (res.writable) {
+            res.write(': heartbeat\n\n'); // Esto es invisible para el usuario
         }
-    }, 25000);
+    }, 20000);
 
     const sendUpdate = (data) => {
         // ✅ Cambio 2: Try-catch para capturar el error de escritura en socket cerrado
