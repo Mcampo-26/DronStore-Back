@@ -59,7 +59,7 @@ const ventaSchema = new mongoose.Schema(
     },
     metodoPago: {
       type: String,
-      enum: ["mercadopago", "transferencia", "efectivo"],
+     
       default: "mercadopago",
     }
   },
