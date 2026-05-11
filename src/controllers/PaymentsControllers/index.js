@@ -26,6 +26,7 @@ export const createInteroperableQR = async (req, res) => {
     const cleanTitle = title.replace(/[|]/g, '-');
 
     const orderData = {
+        // INYECCIÓN DE NOMBRE EN LA REFERENCIA PARA EL WEBHOOK
         external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}|NAME_${cleanTitle}`,
         title: title,
         description: title, 
@@ -68,7 +69,7 @@ export const createInteroperableQR = async (req, res) => {
 };
 
 /**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN (CON RE-EMISIÓN PARA LOGS)
+ * 2. WEBHOOK: RECIBIR NOTIFICACIÓN (CON IDEMPOTENCIA)
  */
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
@@ -78,7 +79,7 @@ export const receiveWebhook = async (req, res) => {
 
     // 🛡️ PASO 1 IDEMPOTENCIA: Bloqueo de ráfaga en RAM
     if (pagosEnProceso.has(paymentId)) {
-        console.log(`⏳ Notificación en proceso: ${paymentId}`);
+        console.log(`⏳ Bloqueando notificación duplicada en ráfaga: ${paymentId}`);
         return res.sendStatus(200); 
     }
     pagosEnProceso.add(paymentId);
@@ -91,39 +92,21 @@ export const receiveWebhook = async (req, res) => {
     }
 
     try {
-        // 🛡️ PASO 2: Verificación en Base de Datos + RE-EMISIÓN DE LOGS 🔥
-        const ventaExistente = await Venta.findOne({ transactionId: paymentId }).populate('usuario', 'nombre email');
+        // 🛡️ PASO 2 IDEMPOTENCIA: Verificación en Base de Datos
+        const ventaExistente = await Venta.findOne({ transactionId: paymentId });
         if (ventaExistente) {
-            console.log(`⏭️ Re-emitiendo evento para pago ya procesado: ${paymentId}`);
-            
-            // Si Mercado Pago vuelve a avisar, re-gritamos al Front por si el SSE falló antes
-            appEvents.emit('entity-updated', {
-                type: 'VENTA_CREADA',
-                payload: {
-                    status: 'approved',
-                    transactionId: paymentId,
-                    numeroVenta: ventaExistente.numeroVenta,
-                    totalAmount: ventaExistente.totalAmount,
-                    socketId: ventaExistente.socketId,
-                    venta: ventaExistente 
-                }
-            });
-
+            console.log(`⏭️ Pago ${paymentId} ya procesado anteriormente en DB.`);
             pagosEnProceso.delete(paymentId);
             return res.sendStatus(200);
         }
 
-        // Consultar detalle del pago a Mercado Pago
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
         );
 
         const p = response.data;
-
-        // Si el estado es procesando, liberamos RAM y esperamos el próximo aviso
-        if (p.status === "in_process" || p.status === "pending") {
-            console.log(`⏳ Pago ${paymentId} en estado: ${p.status}. Liberando para reintento.`);
+        if (p.status === "in_process") {
             pagosEnProceso.delete(paymentId);
             return res.sendStatus(200);
         }
@@ -147,8 +130,9 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
-        // Rescate de nombre para logs
+        // Rescate de nombre (Evita genéricos)
         const esNombreGenerico = (n) => !n || n.toLowerCase().includes("qr") || n.toLowerCase().includes("qdron store");
+
         if (items.length === 0 || esNombreGenerico(items[0]?.name)) {
             const nombreRescatado = productNameBackup || p.description || "Unidad QDRON Sincronizada";
             items = [{
@@ -159,14 +143,13 @@ export const receiveWebhook = async (req, res) => {
             }];
         }
 
-        if (p.status === "approved") {
-            // Incrementar contador de ventas
-            const counter = await Counter.findOneAndUpdate(
-                { name: "numeroVenta" },
-                { $inc: { value: 1 } },
-                { returnDocument: 'after', upsert: true }
-            );
+        const counter = await Counter.findOneAndUpdate(
+            { name: "numeroVenta" },
+            { $inc: { value: 1 } },
+            { returnDocument: 'after', upsert: true }
+        );
 
+        if (p.status === "approved") {
             const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia', 'credit_card', 'debit_card']; 
             const metodoFinal = metodosPermitidos.includes(p.payment_method_id) ? p.payment_method_id : 'mercadopago';
 
@@ -187,16 +170,13 @@ export const receiveWebhook = async (req, res) => {
             const ventaFinal = await nuevaVenta.save();
             await ventaFinal.populate('usuario', 'nombre email');
 
-            // 📉 Descuento de stock en DB
             try {
                 await inventoryService.deductStock(items);
-                console.log("✅ Stock actualizado en DB");
             } catch (e) {
                 console.error("❌ Error Stock:", e.message);
             }
 
-            // 🚀 EMISIÓN SSE (Avisamos al Front)
-            console.log(`🚀 VENTA_CREADA: #${ventaFinal.numeroVenta} - Emitiendo evento`);
+            console.log(`🚀 VENTA_CREADA: #${ventaFinal.numeroVenta} - ${items[0]?.name}`);
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -210,7 +190,6 @@ export const receiveWebhook = async (req, res) => {
             });
 
         } else {
-            // Notificar rechazo
             appEvents.emit('entity-updated', {
                 type: 'VENTA_RECHAZADA',
                 payload: {
@@ -221,12 +200,13 @@ export const receiveWebhook = async (req, res) => {
             });
         }
 
+        // 🔥 LIBERACIÓN: Limpiamos la RAM al terminar el proceso exitoso
         pagosEnProceso.delete(paymentId);
         res.status(200).json({ message: "OK" });
 
     } catch (error) {
         console.error("❌ Error Crítico Webhook:", error.message);
-        pagosEnProceso.delete(paymentId);
+        pagosEnProceso.delete(paymentId); // Liberamos en caso de error para permitir reintentos legítimos
         res.status(200).json({ message: "Error procesado" });
     }
 };
