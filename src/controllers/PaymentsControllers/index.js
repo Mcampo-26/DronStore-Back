@@ -3,9 +3,48 @@ import Venta from "../../models/Venta.js";
 import Counter from '../../models/Counter.js';
 import appEvents from "../../utilities/eventEmitter.js";
 import { inventoryService } from "../../services/stock/inventoryService.js";
-import { Server } from "socket.io";
 
 const pagosEnProceso = new Set();
+
+/**
+ * 🔧 FUNCIONES AUXILIARES
+ */
+const getMotivoRechazo = (statusDetail) => {
+    const motivos = {
+        "cc_rejected_insufficient_amount": "Fondos insuficientes.",
+        "cc_rejected_high_risk": "Rechazado por seguridad.",
+        "cc_rejected_duplicated_payment": "Pago duplicado.",
+        "cc_rejected_bad_filled_card_number": "Número de tarjeta inválido.",
+        "cc_rejected_bad_filled_date": "Fecha de vencimiento incorrecta.",
+        "cc_rejected_bad_filled_security_code": "Código de seguridad incorrecto.",
+        "cc_rejected_blacklist": "Tarjeta restringida.",
+        "cc_rejected_call_for_authorize": "Debe autorizar el pago en su banco.",
+        "cc_rejected_card_disabled": "Tarjeta deshabilitada.",
+        "cc_rejected_card_error": "Error técnico con la tarjeta.",
+        "cc_rejected_invalid_installments": "Número de cuotas no permitido."
+    };
+    return motivos[statusDetail] || "Transacción rechazada por la entidad emisora.";
+};
+
+const obtenerItemsOrden = async (orderId) => {
+    if (!orderId) return [];
+    try {
+        const { data } = await axios.get(
+            `https://api.mercadopago.com/merchant_orders/${orderId}`,
+            { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
+        );
+
+        return (data.items || []).map((item) => ({
+            productId: item.id, // ID de MongoDB que enviamos en createQR
+            name: item.title,
+            price: item.unit_price,
+            quantity: item.quantity,
+        }));
+    } catch (error) {
+        console.warn(`⚠️ No se pudo rescatar items de la orden ${orderId}:`, error.message);
+        return [];
+    }
+};
 
 /**
  * 1. GENERAR QR INTEROPERABLE
@@ -66,20 +105,17 @@ export const createInteroperableQR = async (req, res) => {
 };
 
 /**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN (MODELO HÍBRIDO SOCKET + SSE)
+ * 2. WEBHOOK: PROCESAMIENTO DE PAGO Y STOCK
  */
 export const receiveWebhook = async (req, res) => {
-    // 🔥 Recuperamos IO de los locals configurados en index.js
     const io = req.app.locals.io;
     const { type, data } = req.body;
     const paymentId = data?.id || req.query.id || req.query['data.id'];
 
     if (!paymentId) return res.sendStatus(200);
 
-    if (pagosEnProceso.has(paymentId)) {
-        console.log(`⏳ Bloqueando duplicado: ${paymentId}`);
-        return res.sendStatus(200); 
-    }
+    // Evitar ráfagas de MP
+    if (pagosEnProceso.has(paymentId)) return res.sendStatus(200); 
     pagosEnProceso.add(paymentId);
 
     if (type !== "payment" && req.query.topic !== "payment") {
@@ -108,8 +144,11 @@ export const receiveWebhook = async (req, res) => {
         const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
-        const productNameBackup = referenceParts[3]?.replace('NAME_', '');
 
+        /**
+         * 🔄 RESCATE DE ITEMS (STOCK FIX)
+         * Si MP no envía items, los buscamos en la merchant_order
+         */
         let items = p.additional_info?.items?.map(i => ({
             productId: i.id,
             name: i.title,
@@ -117,13 +156,9 @@ export const receiveWebhook = async (req, res) => {
             quantity: parseInt(i.quantity)
         })) || [];
 
-        if (items.length === 0) {
-            items = [{
-                productId: "600000000000000000000001", 
-                name: productNameBackup || "Unidad QDRON Sincronizada",
-                price: p.transaction_amount,
-                quantity: 1
-            }];
+        if (items.length === 0 && p.order?.id) {
+            console.log(`🔎 Items vacíos en Payment. Rescatando de Merchant Order: ${p.order.id}`);
+            items = await obtenerItemsOrden(p.order.id);
         }
 
         const counter = await Counter.findOneAndUpdate(
@@ -133,7 +168,7 @@ export const receiveWebhook = async (req, res) => {
         );
 
         if (p.status === "approved") {
-            // 1. Guardar en DB
+            // 1. Guardar Venta
             const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
                 usuario: userId,
@@ -150,13 +185,18 @@ export const receiveWebhook = async (req, res) => {
             const ventaFinal = await nuevaVenta.save();
             await ventaFinal.populate('usuario', 'nombre email');
 
-            // 2. Stock
-            try { await inventoryService.deductStock(items); } catch (e) { console.error(e.message); }
+            // 2. Descontar Stock (Ahora sí tiene los IDs rescatados)
+            if (items.length > 0) {
+                try { 
+                    await inventoryService.deductStock(items); 
+                    console.log(`📉 Stock descontado para venta #${counter.value}`);
+                } catch (e) { 
+                    console.error("❌ Error stock:", e.message); 
+                }
+            }
 
-            // 🚀 --- CANAL SOCKET.IO (PARA EL CLIENTE - CIERRE QR) ---
-            // Esto es directo e inmune al H27 de Heroku
+            // 🚀 Emisión Socket (Cliente)
             if (io && socketId) {
-                console.log(`🎯 Emitiendo éxito por Socket al cliente: ${socketId}`);
                 io.to(socketId).emit("paymentSuccess", {
                     status: 'approved',
                     paymentId: paymentId,
@@ -165,59 +205,44 @@ export const receiveWebhook = async (req, res) => {
                 });
             }
 
-            // 📢 --- CANAL APP EVENTS (PARA ADMIN, LOGS Y SSE) ---
+            // 📢 Emisión Eventos (Admin/Logs)
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
-                payload: {
-                    status: 'approved',
-                    socketId: socketId,
-                    venta: ventaFinal 
-                }
+                payload: { status: 'approved', socketId, venta: ventaFinal }
             });
 
-            // 📝 EMITIR LOG PARA AUDITORÍA
             appEvents.emit('entity-updated', {
                 type: 'LOG_CREATED',
                 payload: {
                     accion: 'VENTA_QR',
-                    detalles: `Venta #${counter.value} procesada exitosamente.`,
+                    detalles: `Venta #${counter.value} (${p.payment_method_id}) aprobada.`,
                     fecha: new Date()
                 }
             });
 
         } else {
-            // ❌ RECHAZO POR SOCKET
+            // Rechazo
             if (io && socketId) {
                 io.to(socketId).emit("paymentFailed", {
                     status: 'rejected',
                     message: getMotivoRechazo(p.status_detail)
                 });
             }
-
-            appEvents.emit('entity-updated', {
-                type: 'VENTA_RECHAZADA',
-                payload: { status: 'rejected', socketId: socketId }
-            });
         }
 
         pagosEnProceso.delete(paymentId);
         res.status(200).json({ message: "OK" });
 
     } catch (error) {
-        console.error("❌ Error Crítico:", error.message);
+        console.error("❌ Error Crítico Webhook:", error.message);
         pagosEnProceso.delete(paymentId);
         res.status(200).json({ message: "Error" });
     }
 };
 
-const getMotivoRechazo = (statusDetail) => {
-    const motivos = {
-        "cc_rejected_insufficient_amount": "Fondos insuficientes.",
-        "cc_rejected_high_risk": "Rechazado por seguridad.",
-        "cc_rejected_duplicated_payment": "Pago duplicado."
-    };
-    return motivos[statusDetail] || "Transacción rechazada.";
-};
+/**
+ * 3. CONSULTAR DETALLE
+ */
 export const getDetallePago = async (req, res) => {
     const { paymentId } = req.params;
     try {
