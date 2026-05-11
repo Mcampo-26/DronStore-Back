@@ -25,15 +25,16 @@ const app = express();
 // --- 1. CONFIGURACIÓN DEL SERVIDOR HTTP & SOCKET.IO ---
 const httpServer = createServer(app); // ✅ Definimos httpServer envolviendo a app
 
-const io = new Server(httpServer, { // ✅ Ahora sí, httpServer existe
+const io = new Server(httpServer, {
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "https://dronstore.netlify.app"
-    ].filter(Boolean),
+    origin: ["http://localhost:5173", "https://tu-app.netlify.app"],
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  // 🔥 AJUSTES DE ESTABILIDAD 2026
+  pingTimeout: 60000, // 60 segundos (Heroku suele cerrar conexiones inactivas rápido)
+  pingInterval: 25000, // Latido cada 25s para mantener el túnel abierto
+  connectTimeout: 45000 // Tiempo de espera para la conexión inicial
 });
 
 // Compartimos 'io' para usarlo en los controladores de pagos (req.app.locals.io)
