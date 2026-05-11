@@ -26,7 +26,6 @@ export const createInteroperableQR = async (req, res) => {
     const cleanTitle = title.replace(/[|]/g, '-');
 
     const orderData = {
-        // INYECCIÓN DE NOMBRE EN LA REFERENCIA PARA EL WEBHOOK
         external_reference: `USER_${userId}|SOCKET_${socketId}|PROD_${backupProductId}|NAME_${cleanTitle}`,
         title: title,
         description: title, 
@@ -69,7 +68,7 @@ export const createInteroperableQR = async (req, res) => {
 };
 
 /**
- * 2. WEBHOOK: RECIBIR NOTIFICACIÓN (CON IDEMPOTENCIA)
+ * 2. WEBHOOK: RECIBIR NOTIFICACIÓN (CON RE-EMISIÓN PARA LOGS)
  */
 export const receiveWebhook = async (req, res) => {
     const { type, data } = req.body;
@@ -92,12 +91,12 @@ export const receiveWebhook = async (req, res) => {
     }
 
     try {
-        // 🛡️ PASO 2: Verificación y RE-EMISIÓN
+        // 🛡️ PASO 2: Verificación en Base de Datos + RE-EMISIÓN DE LOGS 🔥
         const ventaExistente = await Venta.findOne({ transactionId: paymentId }).populate('usuario', 'nombre email');
         if (ventaExistente) {
-            console.log(`⏭️ Re-emitiendo evento para pago ya existente: ${paymentId}`);
+            console.log(`⏭️ Re-emitiendo evento para pago ya procesado: ${paymentId}`);
             
-            // 🔥 Si la venta ya existe, volvemos a avisar al Front por si no escuchó antes
+            // Si Mercado Pago vuelve a avisar, re-gritamos al Front por si el SSE falló antes
             appEvents.emit('entity-updated', {
                 type: 'VENTA_CREADA',
                 payload: {
@@ -114,21 +113,22 @@ export const receiveWebhook = async (req, res) => {
             return res.sendStatus(200);
         }
 
+        // Consultar detalle del pago a Mercado Pago
         const response = await axios.get(
             `https://api.mercadopago.com/v1/payments/${paymentId}`,
             { headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_API_KEY}` } }
         );
 
         const p = response.data;
-        
-        // Si el pago no está aprobado, liberamos y salimos
-        if (p.status !== "approved") {
-            console.log(`⚠️ Pago ${paymentId} con estado: ${p.status}`);
+
+        // Si el estado es procesando, liberamos RAM y esperamos el próximo aviso
+        if (p.status === "in_process" || p.status === "pending") {
+            console.log(`⏳ Pago ${paymentId} en estado: ${p.status}. Liberando para reintento.`);
             pagosEnProceso.delete(paymentId);
             return res.sendStatus(200);
         }
 
-        // Extracción de datos de referencia (Tu lógica actual que funciona)
+        // Extracción de datos de referencia
         const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
@@ -147,8 +147,8 @@ export const receiveWebhook = async (req, res) => {
             }));
         }
 
+        // Rescate de nombre para logs
         const esNombreGenerico = (n) => !n || n.toLowerCase().includes("qr") || n.toLowerCase().includes("qdron store");
-
         if (items.length === 0 || esNombreGenerico(items[0]?.name)) {
             const nombreRescatado = productNameBackup || p.description || "Unidad QDRON Sincronizada";
             items = [{
@@ -159,53 +159,67 @@ export const receiveWebhook = async (req, res) => {
             }];
         }
 
-        // Contador de ventas
-        const counter = await Counter.findOneAndUpdate(
-            { name: "numeroVenta" },
-            { $inc: { value: 1 } },
-            { returnDocument: 'after', upsert: true }
-        );
+        if (p.status === "approved") {
+            // Incrementar contador de ventas
+            const counter = await Counter.findOneAndUpdate(
+                { name: "numeroVenta" },
+                { $inc: { value: 1 } },
+                { returnDocument: 'after', upsert: true }
+            );
 
-        const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia', 'credit_card', 'debit_card']; 
-        const metodoFinal = metodosPermitidos.includes(p.payment_method_id) ? p.payment_method_id : 'mercadopago';
+            const metodosPermitidos = ['mercadopago', 'efectivo', 'transferencia', 'credit_card', 'debit_card']; 
+            const metodoFinal = metodosPermitidos.includes(p.payment_method_id) ? p.payment_method_id : 'mercadopago';
 
-        const nuevaVenta = new Venta({
-            numeroVenta: counter.value,
-            usuario: userId,
-            transactionId: paymentId,
-            externalReference: p.external_reference,
-            totalAmount: p.transaction_amount,
-            status: p.status,
-            fechaVenta: new Date(p.date_created || Date.now()),
-            items,
-            socketId,
-            impresa: false,
-            metodoPago: metodoFinal 
-        });
-
-        const ventaFinal = await nuevaVenta.save();
-        await ventaFinal.populate('usuario', 'nombre email');
-
-        // 📉 Descuento de stock (Prioridad alta)
-        try {
-            await inventoryService.deductStock(items);
-        } catch (e) {
-            console.error("❌ Error Stock:", e.message);
-        }
-
-        // 🚀 EMISIÓN DEL EVENTO (Gritamos al Front)
-        console.log(`🚀 VENTA_CREADA: #${ventaFinal.numeroVenta} - Emitiendo a SSE`);
-        appEvents.emit('entity-updated', {
-            type: 'VENTA_CREADA',
-            payload: {
-                status: 'approved',
-                transactionId: paymentId,
+            const nuevaVenta = new Venta({
                 numeroVenta: counter.value,
+                usuario: userId,
+                transactionId: paymentId,
+                externalReference: p.external_reference,
                 totalAmount: p.transaction_amount,
-                socketId: socketId,
-                venta: ventaFinal 
+                status: p.status,
+                fechaVenta: new Date(p.date_created || Date.now()),
+                items,
+                socketId,
+                impresa: false,
+                metodoPago: metodoFinal 
+            });
+
+            const ventaFinal = await nuevaVenta.save();
+            await ventaFinal.populate('usuario', 'nombre email');
+
+            // 📉 Descuento de stock en DB
+            try {
+                await inventoryService.deductStock(items);
+                console.log("✅ Stock actualizado en DB");
+            } catch (e) {
+                console.error("❌ Error Stock:", e.message);
             }
-        });
+
+            // 🚀 EMISIÓN SSE (Avisamos al Front)
+            console.log(`🚀 VENTA_CREADA: #${ventaFinal.numeroVenta} - Emitiendo evento`);
+            appEvents.emit('entity-updated', {
+                type: 'VENTA_CREADA',
+                payload: {
+                    status: 'approved',
+                    transactionId: paymentId,
+                    numeroVenta: counter.value,
+                    totalAmount: p.transaction_amount,
+                    socketId: socketId,
+                    venta: ventaFinal 
+                }
+            });
+
+        } else {
+            // Notificar rechazo
+            appEvents.emit('entity-updated', {
+                type: 'VENTA_RECHAZADA',
+                payload: {
+                    status: 'rejected',
+                    message: getMotivoRechazo(p.status_detail),
+                    socketId: socketId
+                }
+            });
+        }
 
         pagosEnProceso.delete(paymentId);
         res.status(200).json({ message: "OK" });
@@ -216,6 +230,7 @@ export const receiveWebhook = async (req, res) => {
         res.status(200).json({ message: "Error procesado" });
     }
 };
+
 /**
  * 3. OBTENER DETALLE DEL PAGO
  */
