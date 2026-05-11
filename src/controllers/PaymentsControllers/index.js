@@ -26,7 +26,7 @@ const getMotivoRechazo = (statusDetail) => {
     return motivos[statusDetail] || "Transacción rechazada por la entidad emisora.";
 };
 
-const obtenerItemsOrden = async (orderId) => {
+const obtenerItemsOrden = async (orderId, backupId) => { // 👈 Agregamos backupId
     if (!orderId) return [];
     try {
         const { data } = await axios.get(
@@ -35,13 +35,14 @@ const obtenerItemsOrden = async (orderId) => {
         );
 
         return (data.items || []).map((item) => ({
-            productId: item.id, // ID de MongoDB que enviamos en createQR
+            // 🔥 Si item.id está vacío, usamos el backupId que rescatamos del external_reference
+            productId: item.id && item.id !== "" ? item.id : backupId, 
             name: item.title,
             price: item.unit_price,
             quantity: item.quantity,
         }));
     } catch (error) {
-        console.warn(`⚠️ No se pudo rescatar items de la orden ${orderId}:`, error.message);
+        console.warn(`⚠️ No se pudo rescatar items de la orden ${orderId}`);
         return [];
     }
 };
@@ -144,6 +145,7 @@ export const receiveWebhook = async (req, res) => {
         const referenceParts = p.external_reference ? p.external_reference.split('|') : [];
         const userId = referenceParts[0]?.replace('USER_', '');
         const socketId = referenceParts[1]?.replace('SOCKET_', '');
+        const backupProductId = referenceParts[2]?.replace('PROD_', '');
 
         /**
          * 🔄 RESCATE DE ITEMS (STOCK FIX)
@@ -158,7 +160,7 @@ export const receiveWebhook = async (req, res) => {
 
         if (items.length === 0 && p.order?.id) {
             console.log(`🔎 Items vacíos en Payment. Rescatando de Merchant Order: ${p.order.id}`);
-            items = await obtenerItemsOrden(p.order.id);
+            items = await obtenerItemsOrden(p.order.id, backupProductId);
         }
 
         const counter = await Counter.findOneAndUpdate(
