@@ -1,9 +1,9 @@
 import axios from 'axios';
 import Venta from "../../models/Venta.js"; 
 import Counter from '../../models/Counter.js';
-import appEvents from "../../utilities/eventEmitter.js";
+
 import { inventoryService } from "../../services/stock/inventoryService.js";
-import { registrarLog } from "../../Helpers/auditoria.js"; // Ajustá la ruta según tu carpeta
+import { registrarLog } from "../../helpers/auditoriaHelper.js"; // Ajustá la ruta según tu carpeta
 
 
 
