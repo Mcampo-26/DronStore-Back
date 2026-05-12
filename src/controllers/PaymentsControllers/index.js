@@ -3,6 +3,11 @@ import Venta from "../../models/Venta.js";
 import Counter from '../../models/Counter.js';
 import appEvents from "../../utilities/eventEmitter.js";
 import { inventoryService } from "../../services/stock/inventoryService.js";
+import { registrarLog } from "../../Helpers/auditoria.js"; // Ajustá la ruta según tu carpeta
+
+
+
+
 
 const pagosEnProceso = new Set();
 
@@ -208,18 +213,11 @@ export const receiveWebhook = async (req, res) => {
             }
 
             // 📢 Emisión Eventos (Admin/Logs)
-            appEvents.emit('entity-updated', {
-                type: 'VENTA_CREADA',
-                payload: { status: 'approved', socketId, venta: ventaFinal }
-            });
-
-            appEvents.emit('entity-updated', {
-                type: 'LOG_CREATED',
-                payload: {
-                    accion: 'VENTA_QR',
-                    detalles: `Venta #${counter.value} (${p.payment_method_id}) aprobada.`,
-                    fecha: new Date()
-                }
+            await registrarLog({
+                usuarioId: userId,
+                accion: 'VENTA_QR',
+                detalles: `Venta #${counter.value} (${p.payment_method_id}) aprobada por ${p.transaction_amount}.`,
+                req // Pasamos req para capturar la IP si querés
             });
 
         } else {
