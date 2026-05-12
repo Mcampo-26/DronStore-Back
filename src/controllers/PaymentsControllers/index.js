@@ -215,9 +215,9 @@ export const receiveWebhook = async (req, res) => {
             // 📢 Emisión Eventos (Admin/Logs)
             await registrarLog({
                 usuarioId: userId,
-                accion: 'VENTA_QR',
+                accion: 'VENTA NUEVA', // 👈 Aquí es donde modificás el nombre del evento
                 detalles: `Venta #${counter.value} (${p.payment_method_id}) aprobada por ${p.transaction_amount}.`,
-                req // Pasamos req para capturar la IP si querés
+                req 
             });
 
         } else {

@@ -1,5 +1,7 @@
 import Role from "../../models/Role.js";
+import User from "../../models/User.js"; // 👈 FUNDAMENTAL para saber quién es
 import appEvents from "../../utilities/eventEmitter.js";
+import { registrarLog } from "../../helpers/auditoriaHelper.js";
 
 // --- OBTENER ROLES ---
 export const getRoles = async (req, res) => {
@@ -7,7 +9,6 @@ export const getRoles = async (req, res) => {
     const roles = await Role.find({}).sort({ createdAt: -1 });
     return res.status(200).json(roles);
   } catch (error) {
-    console.error("❌ GET_ROLES_ERROR:", error.message);
     return res.status(500).json({ message: "Error al obtener los roles tácticos" });
   }
 };
@@ -15,7 +16,7 @@ export const getRoles = async (req, res) => {
 // --- CREAR ROL (POST) ---
 export const createRole = async (req, res) => {
   try {
-    const { name, permissions } = req.body;
+    const { name, permissions, usuarioId } = req.body;
 
     if (!name) return res.status(400).json({ message: "El nombre es obligatorio" });
 
@@ -24,12 +25,24 @@ export const createRole = async (req, res) => {
       permissions: permissions || {}
     });
 
-    // ✅ EMISIÓN SSE (Única fuente de verdad)
+    // ✅ EMISIÓN SSE 
     appEvents.emit('entity-updated', { type: 'ROLE_ADDED', payload: newRole });
+
+    // 📝 AUDITORÍA CON NOMBRE DE USUARIO
+    if (usuarioId) {
+      const operador = await User.findById(usuarioId);
+      const nombreOperador = operador ? operador.nombre : "Un operador";
+
+      await registrarLog({
+        usuarioId,
+        accion: 'NUEVO ROL CONFIGURADO',
+        detalles: `${nombreOperador} creó el rol: ${newRole.name}`,
+        req
+      });
+    }
 
     return res.status(201).json(newRole);
   } catch (error) {
-    console.error("❌ CREATE_ROLE_ERROR:", error.message);
     if (error.code === 11000) return res.status(400).json({ message: "Este nivel de acceso ya existe" });
     return res.status(500).json({ message: "Error al configurar el nuevo rol" });
   }
@@ -39,13 +52,15 @@ export const createRole = async (req, res) => {
 export const updateRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const body = req.body;
+    const { name, permissions, usuarioId } = req.body;
 
-    if (body.name) body.name = body.name.toUpperCase();
+    const updateData = {};
+    if (name) updateData.name = name.toUpperCase();
+    if (permissions) updateData.permissions = permissions;
 
     const updatedRole = await Role.findByIdAndUpdate(
       id,
-      { $set: body },
+      { $set: updateData },
       { new: true, runValidators: true }
     );
 
@@ -54,9 +69,21 @@ export const updateRole = async (req, res) => {
     // ✅ EMISIÓN SSE
     appEvents.emit('entity-updated', { type: 'ROLE_UPDATED', payload: updatedRole });
 
+    // 📝 AUDITORÍA CON NOMBRE DE USUARIO
+    if (usuarioId) {
+      const operador = await User.findById(usuarioId);
+      const nombreOperador = operador ? operador.nombre : "Un operador";
+
+      await registrarLog({
+        usuarioId,
+        accion: 'PRIVILEGIOS MODIFICADOS',
+        detalles: `${nombreOperador} actualizó los permisos del rol: ${updatedRole.name}`,
+        req
+      });
+    }
+
     return res.json(updatedRole);
   } catch (error) {
-    console.error("❌ UPDATE_ROLE_ERROR:", error.message);
     return res.status(500).json({ error: "Error al actualizar los privilegios" });
   }
 };
@@ -65,6 +92,8 @@ export const updateRole = async (req, res) => {
 export const deleteRole = async (req, res) => {
   try {
     const { id } = req.params;
+    const { usuarioId } = req.query; // Se recibe por query en DELETE
+
     const deleted = await Role.findByIdAndDelete(id);
 
     if (!deleted) return res.status(404).json({ error: "Rol no encontrado" });
@@ -72,9 +101,21 @@ export const deleteRole = async (req, res) => {
     // ✅ EMISIÓN SSE
     appEvents.emit('entity-updated', { type: 'ROLE_DELETED', payload: id });
 
+    // 📝 AUDITORÍA CON NOMBRE DE USUARIO
+    if (usuarioId) {
+      const operador = await User.findById(usuarioId);
+      const nombreOperador = operador ? operador.nombre : "Un operador";
+
+      await registrarLog({
+        usuarioId,
+        accion: 'ROL ELIMINADO',
+        detalles: `${nombreOperador} eliminó el acceso de nivel: ${deleted.name}`,
+        req
+      });
+    }
+
     return res.json({ message: "Rol eliminado del sistema" });
   } catch (error) {
-    console.error("❌ DELETE_ROLE_ERROR:", error.message);
     return res.status(500).json({ error: "Error al eliminar el rol" });
   }
 };

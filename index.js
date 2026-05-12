@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
-import { createServer } from 'http'; // 👈 IMPORTANTE: Para crear el servidor real
-import { Server } from 'socket.io';   // 👈 IMPORTANTE: Para los sockets
+import { createServer } from 'http'; 
+import { Server } from 'socket.io';  
 import cors from 'cors';
 import morgan from 'morgan';
 import dbConnect from './src/config/db.js';
@@ -23,24 +23,21 @@ import routerLog from './src/routes/Log/index.js';
 const app = express();
 
 // --- 1. CONFIGURACIÓN DEL SERVIDOR HTTP & SOCKET.IO ---
-const httpServer = createServer(app); // ✅ Definimos httpServer envolviendo a app
+const httpServer = createServer(app); 
 
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "https://tu-app.netlify.app"],
+    origin: ["http://localhost:5173", "https://dronstore.netlify.app"],
     methods: ["GET", "POST"],
     credentials: true
   },
-  // 🔥 AJUSTES DE ESTABILIDAD 2026
-  pingTimeout: 60000, // 60 segundos (Heroku suele cerrar conexiones inactivas rápido)
-  pingInterval: 25000, // Latido cada 25s para mantener el túnel abierto
-  connectTimeout: 45000 // Tiempo de espera para la conexión inicial
+  pingTimeout: 60000, 
+  pingInterval: 25000, 
+  connectTimeout: 45000 
 });
 
-// Compartimos 'io' para usarlo en los controladores de pagos (req.app.locals.io)
 app.locals.io = io;
 
-// Lógica de conexión de sockets
 io.on('connection', (socket) => {
   console.log(`🔌 Dispositivo vinculado: ${socket.id}`);
   
@@ -52,7 +49,7 @@ io.on('connection', (socket) => {
 // --- 2. BASE DE DATOS ---
 dbConnect();
 
-// --- 3. CONFIGURACIÓN DE CORS ---
+// --- 3. CONFIGURACIÓN DE CORS BLINDADA (Solución imagen_19.png) ---
 const whiteList = ['https://dronstore.netlify.app', 'http://localhost:5173'];
 
 app.use(cors({
@@ -66,7 +63,16 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+  // 🔥 Cabeceras añadidas para estabilizar el flujo SSE y evitar bloqueos de navegador
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'Accept', 
+    'Cache-Control', 
+    'Pragma'
+  ],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
 // --- 4. MIDDLEWARES ---
@@ -94,7 +100,6 @@ app.get('/', (req, res) => {
 // --- 6. LANZAMIENTO ---
 const PORT = process.env.PORT || 4000;
 
-// 🔥 IMPORTANTE: Usamos httpServer.listen, NO app.listen
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`
   🚀 SERVIDOR HÍBRIDO ACTIVO
