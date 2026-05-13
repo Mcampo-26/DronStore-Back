@@ -5,26 +5,31 @@ import crypto from 'crypto';
 import Log from '../../models/Log.js';
 import appEvents from "../../utilities/eventEmitter.js";
 
-// LOGIN
+/**
+ * LOGIN: Inicia sesión y devuelve los datos del usuario con su ROL populado.
+ */
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Buscamos al usuario incluyendo el password oculto
-    const usuario = await User.findOne({ email }).select('+password');
+    // 1. Buscamos al usuario incluyendo el password y POPULAMOS el rol
+    // Esto es clave para que el frontend reciba "ADMIN" o "SUPERADMIN"
+    const usuario = await User.findOne({ email })
+      .select('+password')
+      .populate('role'); 
 
     if (!usuario) {
       return res.status(401).json({ success: false, message: "Credenciales inválidas" });
     }
 
-    // Verificación de contraseña
+    // 2. Verificación de contraseña
     const isMatch = await bcrypt.compare(password, usuario.password);
     
     if (!isMatch) {
       return res.status(401).json({ success: false, message: "Credenciales inválidas" });
     }
 
-    // Generación de Token y Sesión
+    // 3. Generación de Token y Sesión
     const sessionId = crypto.randomUUID();
     const token = jwt.sign(
       { id: usuario._id, nombre: usuario.nombre, sessionId }, 
@@ -33,23 +38,25 @@ export const login = async (req, res) => {
     );
 
     // --- SISTEMA DE AUDITORÍA ---
-    // 1. Grabamos el log en la base de datos
+    // Grabamos el log en la base de datos
     const nuevoLog = await Log.create({
       usuario: usuario._id,
       accion: "AUTH_LOGIN",
       detalles: `Inicio de sesión exitoso. Terminal: ${sessionId.slice(0, 8)}`
     });
 
-    // 2. Populamos con el usuario para que la Consola de Logs tenga el nombre/email
+    // Populamos para la actualización en tiempo real
     const logPopulado = await Log.findById(nuevoLog._id).populate('usuario', 'nombre email');
 
-    // 3. Emitimos el evento para actualización en tiempo real en el frontend
-    appEvents.emit('entity-updated', { 
-      type: 'LOG_CREATED', 
-      payload: logPopulado 
-    });
+    // Emitimos el evento para el Hangar de Logs (SSE)
+    if (appEvents) {
+      appEvents.emit('entity-updated', { 
+        type: 'LOG_CREATED', 
+        payload: logPopulado 
+      });
+    }
 
-    // Limpieza de datos sensibles
+    // 4. Limpieza de datos sensibles antes de enviar al Frontend
     const usuarioFinal = usuario.toObject();
     delete usuarioFinal.password;
 
@@ -66,14 +73,15 @@ export const login = async (req, res) => {
   }
 };
 
-// LOGOUT
-// controllers/authController.js
+/**
+ * LOGOUT: Cierra la sesión y registra el evento de salida.
+ */
 export const logout = async (req, res) => {
   try {
-    const { usuarioId } = req.body; // Enviamos el ID desde el frente si no usas protect
+    const { usuarioId } = req.body; 
 
     if (usuarioId) {
-      // 1. Creamos el registro en la DB
+      // 1. Registramos la salida en los Logs
       const nuevoLog = await Log.create({
         usuario: usuarioId,
         accion: "AUTH_LOGOUT",
@@ -81,10 +89,10 @@ export const logout = async (req, res) => {
         ip: req.ip
       });
 
-      // 2. Populamos para que el Hangar de Logs muestre el nombre real
+      // 2. Populamos para el registro visual
       const logPopulado = await Log.findById(nuevoLog._id).populate('usuario', 'nombre email');
       
-      // 3. Emitimos el evento para que la página se actualice SOLA (SSE)
+      // 3. Notificamos al sistema en tiempo real
       if (appEvents) {
         appEvents.emit('entity-updated', { 
           type: 'LOG_CREATED', 
@@ -93,9 +101,9 @@ export const logout = async (req, res) => {
       }
     }
 
-    res.json({ success: true, message: "Log grabado y sesión cerrada" });
+    res.json({ success: true, message: "Sesión cerrada correctamente." });
   } catch (error) {
-    console.error("Error al grabar log de salida:", error);
+    console.error("❌ Error al grabar log de salida:", error);
     res.status(500).json({ success: false });
   }
 };
