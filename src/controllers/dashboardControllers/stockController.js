@@ -1,57 +1,120 @@
 import { stockService } from '../../services/Dashboard/stockDashboardService.js';
 
 /**
- * Controller para la gestión operativa del Stock
+ * Controller de operaciones de stock
  */
 export const stockController = {
 
   /**
-   * Endpoint para descontar stock (útil para integraciones manuales o correcciones)
    * POST /api/stock/deduct
+   * Descuenta stock utilizando FIFO
    */
-  deductStock: async (req, res) => {
-    try {
-      const { items } = req.body; // Array de { productId, quantity, name }
+  deductStock: async (
+    req,
+    res
+  ) => {
 
-      if (!items || !Array.isArray(items)) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Se requiere un array de items para procesar el stock." 
+    try {
+
+      const { items } = req.body;
+
+      /**
+       * VALIDACIÓN
+       */
+      if (
+        !items ||
+        !Array.isArray(items) ||
+        items.length === 0
+      ) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Se requiere un array válido de items."
         });
       }
 
-      const results = await stockService.deductStock(items);
+      /**
+       * PROCESAR DESCUENTO
+       */
+      const results =
+        await stockService.deductStock(items);
 
-      res.status(200).json({
+      return res.status(200).json({
+
         success: true,
-        message: "Stock actualizado correctamente",
+
+        message:
+          "Stock actualizado correctamente",
+
         payload: results
       });
+
     } catch (error) {
-      console.error("Stock Controller Error:", error);
-      res.status(500).json({
+
+      console.error(
+        "❌ Stock Controller Error:",
+        error
+      );
+
+      return res.status(500).json({
+
         success: false,
-        message: error.message || "Error al procesar la deducción de stock"
+
+        message:
+          error.message ||
+          "Error al procesar stock",
+
+        error:
+          process.env.NODE_ENV === "development"
+            ? error.message
+            : undefined
       });
     }
   },
 
   /**
-   * Endpoint para obtener el estado actual de los productos (Dash)
    * GET /api/stock/stats
+   * Obtiene métricas del dashboard
    */
-  getInventoryStats: async (req, res) => {
+  getInventoryStats: async (
+    req,
+    res
+  ) => {
+
     try {
-      const inventory = await stockService.getStockStatsForDash();
-      
-      res.status(200).json({
+
+      const inventory =
+        await stockService.getStockStatsForDash();
+
+      return res.status(200).json({
+
         success: true,
-        payload: inventory
+
+        payload:
+          inventory || []
       });
+
     } catch (error) {
-      res.status(500).json({
+
+      console.error(
+        "❌ Inventory Stats Error:",
+        error
+      );
+
+      return res.status(500).json({
+
         success: false,
-        message: "Error al obtener estadísticas de inventario"
+
+        message:
+          "Error al obtener estadísticas de inventario",
+
+        error:
+          process.env.NODE_ENV === "development"
+            ? error.message
+            : undefined
       });
     }
   }

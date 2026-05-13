@@ -1,6 +1,5 @@
 import Venta from '../../models/Venta.js';
 import Usuario from '../../models/User.js';
-import Producto from '../../models/Product.js';
 import Log from '../../models/Log.js';
 import { stockService } from './stockDashboardService.js';
 
@@ -29,10 +28,17 @@ export const getStatsService = async () => {
           { 
             $project: { 
               _id: 1,
-              fecha: { $dateToString: { format: "%d/%m", date: "$createdAt" } }, 
-              totalAmount: "$totalAmount",
+            
+              hour: {
+                $dateToString: {
+                  format: "%H:%M",
+                  date: "$createdAt"
+                }
+              },
+            
+              totalAmount: 1,
               status: 1
-            } 
+            }
           },
           { $sort: { _id: 1 } }
         ]
@@ -61,7 +67,10 @@ export const getStatsService = async () => {
       ingresos: ventasStats[0].totalIngresos[0]?.sum || 0,
       activos: totalUsuarios,
       // Calculamos el stock total a partir del desglose real de inventory
-      stock: inventory.reduce((acc, curr) => acc + curr.stock, 0)
+      stock: inventory.reduce(
+        (acc, curr) => acc + (curr.stock || 0),
+        0
+      )
     },
     ventas: ventasStats[0].historico || [],
     inventory: inventory || [], // 👈 Crucial para que el frontend vea los SKUs
