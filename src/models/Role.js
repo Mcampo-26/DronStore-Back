@@ -9,14 +9,18 @@ const RoleSchema = new mongoose.Schema(
       trim: true,
       uppercase: true, // Esto ya lo intenta formatear, pero el middleware asegura el tiro
     },
-    permissions: {
-      viewDash: { type: Boolean, default: false },
-      viewUsuarios: { type: Boolean, default: false },
-      viewRoles: { type: Boolean, default: false },
-      viewStock: { type: Boolean, default: false },
-      viewCarga: { type: Boolean, default: false },
-      viewAuditoria: { type: Boolean, default: false },
-    },
+  // models/Role.js
+permissions: {
+  viewDash: { type: Boolean, default: false },
+  viewUsuarios: { type: Boolean, default: false },
+  viewRoles: { type: Boolean, default: false },
+  viewStock: { type: Boolean, default: false },
+  viewCarga: { type: Boolean, default: false },
+  viewAuditoria: { type: Boolean, default: false },
+  // 🚀 AGREGA ESTOS DOS:
+  viewVentas: { type: Boolean, default: false },
+  viewCategorias: { type: Boolean, default: false },
+},
   },
   {
     timestamps: true,
