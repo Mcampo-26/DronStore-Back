@@ -114,7 +114,13 @@ export const fetchHistory = async (req, res) => {
  */
 export const deleteBatch = async (req, res) => {
   try {
-    const { productId, batchCode } = req.params;
+    // 🚀 Recorremos los parámetros. Si venía con barras extras, req.params['0'] junta el resto
+    const { productId } = req.params;
+    let batchCode = req.params.batchCode;
+    
+    if (req.params['0']) {
+      batchCode += req.params['0'];
+    }
 
     // Buscamos el documento para aplicar la lógica de guardado de Mongoose
     const stockDoc = await Stock.findOne({ producto: productId });
@@ -145,7 +151,7 @@ export const deleteBatch = async (req, res) => {
     // Sincronizar el total tras la eliminación del lote con el modelo Producto
     await Product.findByIdAndUpdate(productId, { stock: stockDoc.cantidadTotal });
 
-    // ⚡️ EMISIÓN EN TIEMPO REAL
+    // ⚡️ EMISIÓN EN TIEMPO REAL ORIGINAL
     appEvents.emit('entity-updated', { 
       type: 'STOCK_UPDATED', 
       payload: { 
@@ -154,7 +160,7 @@ export const deleteBatch = async (req, res) => {
       } 
     });
 
-    res.json({ 
+    return res.json({ 
       success: true, 
       msg: "Lote eliminado con éxito",
       newTotal: stockDoc.cantidadTotal 
@@ -162,6 +168,6 @@ export const deleteBatch = async (req, res) => {
 
   } catch (error) {
     console.error("Error en deleteBatch:", error);
-    res.status(500).json({ success: false, msg: error.message });
+    return res.status(500).json({ success: false, msg: error.message });
   }
 };
