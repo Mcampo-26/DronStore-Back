@@ -2,6 +2,8 @@ import Product from "../../models/Product.js";
 import { registrarLog } from "../../helpers/auditoriaHelper.js"; // ✅ Tu nuevo Helper centralizado
 import appEvents from "../../utilities/eventEmitter.js";
 import User from "../../models/User.js"; // 🚀 AGREGA ESTA LÍNEA
+import { generarProductEmbedding } from "../../helpers/geminiHelper.js"; // 🤖 Helper de IA
+
 // 1. OBTENER TODOS LOS PRODUCTOS
 export const getProducts = async (req, res) => {
   try {
@@ -13,12 +15,12 @@ export const getProducts = async (req, res) => {
   }
 };
 
-// 2. OBTENER UN PRODUCTO POR ID
+// 2. CREAR UN PRODUCTO (POST)
 export const createProduct = async (req, res) => {
   try {
     // 1. SEPARAMOS el usuarioId de la info del producto
     const { usuarioId, ...productInfo } = req.body;
-    const { name, price, image } = productInfo;
+    const { name, price, image, description } = productInfo;
 
     if (!name || !price || !image) {
       return res.status(400).json({ message: "Faltan protocolos obligatorios" });
@@ -29,12 +31,16 @@ export const createProduct = async (req, res) => {
       return res.status(409).json({ message: "Este equipo ya existe" });
     }
 
-    // 2. CREAMOS el producto solo con la info técnica (productInfo)
+    // 🤖 GENERACIÓN DE EMBEDDING CON IA
+    const embedding = await generarProductEmbedding(name.trim(), description || "");
+
+    // 2. CREAMOS el producto incluyendo el vector generado
     const newProduct = await Product.create({
       ...productInfo,
       name: name.trim(),
       price: Number(price),
-      stock: Number(productInfo.stock || 0)
+      stock: Number(productInfo.stock || 0),
+      embedding // ✨ Guardamos el vector en la BD
     });
 
     // 3. AUDITORÍA (Si no hay usuarioId, el helper simplemente no graba el log)
@@ -42,7 +48,7 @@ export const createProduct = async (req, res) => {
       await registrarLog({
         usuarioId,
         accion: "PRODUCT_CREATED",
-        detalles: `Alta de equipo: ${newProduct.name}`,
+        details: `Alta de equipo: ${newProduct.name}`,
         req
       });
     }
@@ -59,6 +65,7 @@ export const createProduct = async (req, res) => {
     return res.status(500).json({ message: "Error al crear producto" });
   }
 };
+
 // 4. ACTUALIZAR PRODUCTO (PUT)
 export const updateProduct = async (req, res) => {
   try {
@@ -71,6 +78,19 @@ export const updateProduct = async (req, res) => {
       logDetalle,     // El string "(modificó: el precio, etc)"
       ...body         // El resto de los datos técnicos del dron
     } = req.body; 
+
+    // 🤖 ACTUALIZACIÓN DEL EMBEDDING SI CAMBIÓ EL NOMBRE O LA DESCRIPCIÓN
+    if (body.name || body.description) {
+      // Si alguno no viene en el body, buscamos el valor previo para no perder contexto
+      const prodPrevio = await Product.findById(id);
+      if (prodPrevio) {
+        const nuevoNombre = body.name ? body.name.trim() : prodPrevio.name;
+        const nuevaDesc = body.description !== undefined ? body.description : prodPrevio.description;
+        
+        // Regeneramos el vector reflejando los cambios semánticos
+        body.embedding = await generarProductEmbedding(nuevoNombre, nuevaDesc);
+      }
+    }
 
     const updatedProduct = await Product.findByIdAndUpdate(
       id,
@@ -85,7 +105,6 @@ export const updateProduct = async (req, res) => {
       const nombreOperador = operador ? operador.nombre : "Un usuario";
 
       // 🚀 CONSTRUCCIÓN DE LA FRASE FINAL
-      // Usamos nombreOriginal si viene del front, sino usamos el del producto actualizado
       const productoIdentificado = nombreOriginal || updatedProduct.name;
       const fraseFinal = `${nombreOperador} editó el producto ${productoIdentificado}${logDetalle || ""}`;
 
@@ -105,6 +124,7 @@ export const updateProduct = async (req, res) => {
     return res.status(500).json({ error: "Error en protocolo de edición" });
   }
 };
+
 // 5. ELIMINAR PRODUCTO (DELETE)
 export const deleteProduct = async (req, res) => {
   try {
@@ -132,6 +152,7 @@ export const deleteProduct = async (req, res) => {
   }
 };
 
+// 6. OBTENER UN PRODUCTO POR ID
 export const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -140,5 +161,59 @@ export const getProductById = async (req, res) => {
     return res.json(product);
   } catch (error) {
     return res.status(500).json({ error: "Error al obtener" });
+  }
+};
+
+
+export const getProductRecommendations = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Buscamos el producto actual para obtener su vector (embedding)
+    const targetProduct = await Product.findById(id);
+    if (!targetProduct) {
+      return res.status(404).json({ error: "Producto de referencia no encontrado" });
+    }
+
+    // Si el producto no tiene embedding todavía (por ser viejo), devolvemos un array vacío seguro
+    if (!targetProduct.embedding || targetProduct.embedding.length === 0) {
+      // Fallback: Si no tiene IA, traemos los últimos 4 productos cargados de forma tradicional
+      const fallback = await Product.find({ _id: { $ne: id } }).limit(4);
+      return res.json(fallback);
+    }
+
+    // 2. Ejecutamos la búsqueda por similitud de vectores en MongoDB Atlas
+    const recommendations = await Product.aggregate([
+      {
+        $vectorSearch: {
+          index: "vector_index", // Así se debe llamar el índice que crearemos en Atlas
+          path: "embedding",
+          queryVector: targetProduct.embedding,
+          numCandidates: 10,     // Margen de candidatos a evaluar internamente
+          limit: 4               // Cantidad de sugerencias que queremos mostrar en la interfaz
+        }
+      },
+      {
+        // Filtro fundamental: Evitamos recomendar el mismo producto que ya se está comprando
+        $match: {
+          _id: { $ne: targetProduct._id }
+        }
+      },
+      {
+        // Limpiamos la respuesta mandando solo lo necesario para el diseño de las tarjetas
+        $project: {
+          name: 1,
+          price: 1,
+          image: 1,
+          category: 1,
+          stock: 1
+        }
+      }
+    ]);
+
+    return res.json(recommendations);
+  } catch (error) {
+    console.error("GET_RECOMMENDATIONS_ERROR:", error);
+    return res.status(550).json({ error: "Error en el protocolo de recomendación por IA" });
   }
 };
