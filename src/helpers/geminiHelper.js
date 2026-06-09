@@ -9,22 +9,25 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
  */
 export const generarProductEmbedding = async (name, description) => {
   try {
+    console.log("🤖 IA: Intentando generar embedding para:", name); // 🔍 LOG 1
+
     if (!process.env.GEMINI_API_KEY) {
-      console.warn("⚠️ GEMINI_API_KEY no configurada. Saltando embedding.");
+      console.warn("⚠️ GEMINI_API_KEY no configurada en las variables de entorno.");
       return [];
     }
 
-    // Juntamos los datos clave en un string de contexto semántico
     const textoParaVector = `Producto: ${name}. Descripción: ${description}`;
 
     const response = await ai.models.embedContent({
-      model: 'text-embedding-004', // Modelo oficial para embeddings de Google
+      model: 'text-embedding-004',
       contents: textoParaVector,
     });
 
-    return response.embedding.values; // Retorna el array de números [0.123, -0.456, ...]
+    console.log("✅ IA: Vector generado con éxito. Dimensiones:", response.embedding.values.length); // 🔍 LOG 2
+    return response.embedding.values;
+    
   } catch (error) {
     console.error("❌ ERROR_GENERATING_EMBEDDING:", error);
-    return []; // Fallback seguro para no romper el flujo principal
+    return [];
   }
 };

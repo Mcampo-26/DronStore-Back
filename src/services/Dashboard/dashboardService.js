@@ -26,9 +26,23 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
         historico: [
           { $match: { status: "approved" } },
           { $sort: { createdAt: -1 } },
-          { $limit: 15 }, 
-          { 
-            $project: { 
+          { $limit: 15 },
+          // 🔍 Desarmamos el array de productos de la venta (si tus productos vienen en un array tipo "items")
+          // Si tu modelo Venta guarda el producto directo en un campo "productId", podés saltear este $unwind
+          { $unwind: { path: "$productos", preserveNullAndEmptyArrays: true } }, 
+          { $unwind: { path: "$items", preserveNullAndEmptyArrays: true } },
+        
+          // 🤝 Hacemos el lookup dinámico con la colección de productos
+          {
+            $lookup: {
+              from: "products", // Asegurate de que coincida con el nombre real de tu colección en MongoDB
+              localField: "productos.productoId", // Ajustalo al campo exacto donde guardás la referencia
+              foreignField: "_id",
+              as: "productoDetalle"
+            }
+          },
+          {
+            $project: {
               _id: 1,
               hour: {
                 $dateToString: {
@@ -37,7 +51,14 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
                 }
               },
               totalAmount: 1,
-              status: 1
+              status: 1,
+              // 🚀 Extraemos el nombre real del producto del lookup. Si no lo encuentra, usa el string del fallback
+              productName: {
+                $ifNull: [
+                  { $arrayElemAt: ["$productoDetalle.name", 0] },
+                  { $ifNull: ["$productos.name", { $ifNull: ["$items.name", "Operación de Venta"] }] }
+                ]
+              }
             }
           },
           { $sort: { _id: 1 } }
