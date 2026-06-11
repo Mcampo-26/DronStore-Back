@@ -7,8 +7,47 @@ import { generarProductEmbedding } from "../../helpers/geminiHelper.js"; // 🤖
 // 1. OBTENER TODOS LOS PRODUCTOS
 export const getProducts = async (req, res) => {
   try {
-    const products = await Product.find({}).sort({ creadoEl: -1 });
-    return res.status(200).json(products);
+    // Capturar parámetros con fallbacks por si no se envían desde el frontend
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
+
+    // Construir la query dinámica para MongoDB
+    let query = {};
+    if (search.trim()) {
+      const isObjectId = mongoose.Types.ObjectId.isValid(search);
+      
+      query = {
+        $or: [
+          { name: { $regex: search, $options: "i" } },
+          { description: { $regex: search, $options: "i" } },
+          ...(isObjectId ? [{ _id: search }] : [])
+        ]
+      };
+    }
+
+    // Ejecutar la consulta del lote y el conteo total en paralelo para optimizar rendimiento
+    const [products, totalItems] = await Promise.all([
+      Product.find(query)
+        .sort({ creadoEl: -1 }) // Mantener tus productos nuevos al principio
+        .skip((page - 1) * limit)
+        .limit(limit),
+      Product.countDocuments(query)
+    ]);
+
+    const totalPages = Math.ceil(totalItems / limit) || 1;
+
+    // Retornamos el objeto con la estructura que tu Store de Zustand procesa nativamente
+    return res.status(200).json({
+      success: true,
+      products,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        itemsPerPage: limit
+      }
+    });
   } catch (error) {
     console.error("GET_PRODUCTS_ERROR:", error);
     return res.status(500).json({ message: "Error al obtener los productos" });

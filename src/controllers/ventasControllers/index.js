@@ -36,15 +36,22 @@ export const getVentaById = async (req, res) => {
  */
 export const getVentas = async (req, res) => {
   try {
+    // 1. Capturar parámetros de paginación y filtros heredados
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
     const { busqueda, estado, desde, hasta } = req.query;
+    
     let query = {};
 
     // Filtros de búsqueda (items, IDs o Referencias)
-    if (busqueda) {
+    if (busqueda && busqueda.trim()) {
+      const isObjectId = mongoose.Types.ObjectId.isValid(busqueda);
+      
       query.$or = [
         { "items.name": { $regex: busqueda, $options: "i" } },
         { transactionId: { $regex: busqueda, $options: "i" } },
-        { externalReference: { $regex: busqueda, $options: "i" } }
+        { externalReference: { $regex: busqueda, $options: "i" } },
+        ...(isObjectId ? [{ _id: busqueda }] : []) // Permite buscar por el ID exacto de la venta sin romper Mongoose
       ];
     }
 
@@ -62,14 +69,29 @@ export const getVentas = async (req, res) => {
       }
     }
 
-    const ventas = await Venta.find(query)
-      .populate("usuario", "nombre email")
-      .sort({ fechaVenta: -1 });
+    // 2. Ejecutar la consulta del segmento y el conteo total en paralelo
+    const [ventas, totalItems] = await Promise.all([
+      Venta.find(query)
+        .populate("usuario", "nombre email")
+        .sort({ fechaVenta: -1 }) // Ventas más recientes primero
+        .skip((page - 1) * limit)  // Saltear registros de páginas anteriores
+        .limit(limit),             // Cortar la cantidad exacta solicitada
+      Venta.countDocuments(query)   // Contar basándose en el filtro actual
+    ]);
 
+    // 3. Calcular metadatos de control para el frontend
+    const totalPages = Math.ceil(totalItems / limit) || 1;
+
+    // 4. Retornar respuesta estructurada compatible con el componente modular de paginación
     res.status(200).json({
       success: true,
-      count: ventas.length,
-      ventas
+      ventas,
+      pagination: {
+        totalItems,
+        totalPages,
+        currentPage: page,
+        itemsPerPage: limit
+      }
     });
 
   } catch (error) {
