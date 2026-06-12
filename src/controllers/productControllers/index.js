@@ -1,4 +1,6 @@
+import mongoose from "mongoose";
 import Product from "../../models/Product.js";
+
 import { registrarLog } from "../../helpers/auditoriaHelper.js"; // ✅ Tu nuevo Helper centralizado
 import appEvents from "../../utilities/eventEmitter.js";
 import User from "../../models/User.js"; // 🚀 AGREGA ESTA LÍNEA
@@ -7,16 +9,17 @@ import { generarProductEmbedding } from "../../helpers/geminiHelper.js"; // 🤖
 // 1. OBTENER TODOS LOS PRODUCTOS
 export const getProducts = async (req, res) => {
   try {
-    // Capturar parámetros con fallbacks por si no se envían desde el frontend
+    // Desactivamos la caché HTTP agresiva para evitar estados fantasmas 304
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || "";
 
-    // Construir la query dinámica para MongoDB
+    // Query dinámica para el buscador
     let query = {};
     if (search.trim()) {
       const isObjectId = mongoose.Types.ObjectId.isValid(search);
-      
       query = {
         $or: [
           { name: { $regex: search, $options: "i" } },
@@ -26,18 +29,18 @@ export const getProducts = async (req, res) => {
       };
     }
 
-    // Ejecutar la consulta del lote y el conteo total en paralelo para optimizar rendimiento
-    const [products, totalItems] = await Promise.all([
+    // Ejecutamos el lote, el total global y los AGOTADOS en paralelo en la BD
+    const [products, totalItems, totalAgotados] = await Promise.all([
       Product.find(query)
-        .sort({ creadoEl: -1 }) // Mantener tus productos nuevos al principio
+        .sort({ creadoEl: -1 })
         .skip((page - 1) * limit)
         .limit(limit),
-      Product.countDocuments(query)
+      Product.countDocuments(query),
+      Product.countDocuments({ ...query, stock: { $lte: 0 } })
     ]);
 
     const totalPages = Math.ceil(totalItems / limit) || 1;
 
-    // Retornamos el objeto con la estructura que tu Store de Zustand procesa nativamente
     return res.status(200).json({
       success: true,
       products,
@@ -45,7 +48,8 @@ export const getProducts = async (req, res) => {
         totalItems,
         totalPages,
         currentPage: page,
-        itemsPerPage: limit
+        itemsPerPage: limit,
+        totalAgotados
       }
     });
   } catch (error) {
@@ -202,7 +206,6 @@ export const getProductById = async (req, res) => {
     return res.status(500).json({ error: "Error al obtener" });
   }
 };
-
 
 export const getProductRecommendations = async (req, res) => {
   try {
