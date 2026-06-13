@@ -20,6 +20,7 @@ import routerPayments from './src/routes/Payments/index.js';
 import routerCart from './src/routes/Cart/index.js';
 import routerLog from './src/routes/Log/index.js';
 import routerDashboard from './src/routes/DashBoard/index.js';
+import userProductRoutes from "./src/routes/UserProduct/index.js";
 const app = express();
 
 // --- 1. CONFIGURACIÓN DEL SERVIDOR HTTP & SOCKET.IO ---
@@ -93,6 +94,7 @@ app.use("/Payments", routerPayments);
 app.use("/cart", routerCart);
 app.use("/log", routerLog);
 app.use("/admin/dashboard", routerDashboard);
+app.use("/my-products", userProductRoutes);
 
 app.get('/', (req, res) => {
   res.status(200).json({ status: 'online', service: 'Dron-Store Hybrid (Socket+SSE)' });

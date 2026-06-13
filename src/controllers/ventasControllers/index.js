@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Venta from "../../models/Venta.js"; 
+import Product from "../../models/Product.js"; // 🚀 CORRECCIÓN CLAVE: Importación que faltaba para evitar el ReferenceError
 import appEvents from "../../utilities/eventEmitter.js";
 
 /**
@@ -32,16 +33,37 @@ export const getVentaById = async (req, res) => {
 };
 
 /**
- * OBTIENE EL LISTADO FILTRADO DE VENTAS
+ * OBTIENE EL LISTADO FILTRADO DE VENTAS (MUESTRA TODO A ADMINS / FILTRA MIS PRODUCTOS A USUARIOS)
  */
 export const getVentas = async (req, res) => {
   try {
-    // 1. Capturar parámetros de paginación y filtros heredados
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const { busqueda, estado, desde, hasta } = req.query;
     
     let query = {};
+
+    // 🛡️ CONTROL DE ROLES HÍBRIDO
+    const usuarioLogueado = req.user || {};
+    const stringRol = JSON.stringify(usuarioLogueado.role || "").toUpperCase();
+    const esAdminGlobal = stringRol.includes("ADMIN") || stringRol.includes("SUPERADMIN");
+
+    console.log("👤 [Ventas Auth] Operador ID:", usuarioLogueado._id);
+    console.log("🛡️ [Ventas Auth] ¿Es Administrador Global?:", esAdminGlobal);
+
+    // Si NO es administrador global y tenemos sesión activa de usuario, aislamos sus drones
+    if (!esAdminGlobal && usuarioLogueado._id) {
+      const misProductos = await Product.find({ usuarioId: usuarioLogueado._id }).select("_id");
+      const misProductIds = misProductos.map(p => p._id.toString());
+
+      // Filtramos la query para que solo traiga transacciones que involucren sus productos
+      query["items.productId"] = { $in: misProductIds };
+    } else if (!esAdminGlobal && !usuarioLogueado._id) {
+      return res.status(401).json({ 
+        success: false, 
+        message: "No se pudo identificar las credenciales del operador. Verificá el token." 
+      });
+    }
 
     // Filtros de búsqueda (items, IDs o Referencias)
     if (busqueda && busqueda.trim()) {
@@ -51,14 +73,19 @@ export const getVentas = async (req, res) => {
         { "items.name": { $regex: busqueda, $options: "i" } },
         { transactionId: { $regex: busqueda, $options: "i" } },
         { externalReference: { $regex: busqueda, $options: "i" } },
-        ...(isObjectId ? [{ _id: busqueda }] : []) // Permite buscar por el ID exacto de la venta sin romper Mongoose
+        ...(isObjectId ? [{ _id: busqueda }] : [])
       ];
     }
 
     // Filtro por estado
-    if (estado) query.status = estado;
+    if (estado) {
+      query.$or = [
+        { status: estado },
+        { estado: estado }
+      ];
+    }
 
-    // Filtro por rango de fechas (Ajustado para cubrir días completos)
+    // Filtro por rango de fechas respetando 'fechaVenta'
     if (desde || hasta) {
       query.fechaVenta = {};
       if (desde) query.fechaVenta.$gte = new Date(desde);
@@ -69,21 +96,19 @@ export const getVentas = async (req, res) => {
       }
     }
 
-    // 2. Ejecutar la consulta del segmento y el conteo total en paralelo
+    // 🚀 EJECUCIÓN SANEADA: Eliminado el populate de items.productId que rompía el Promise.all
     const [ventas, totalItems] = await Promise.all([
       Venta.find(query)
-        .populate("usuario", "nombre email")
-        .sort({ fechaVenta: -1 }) // Ventas más recientes primero
-        .skip((page - 1) * limit)  // Saltear registros de páginas anteriores
-        .limit(limit),             // Cortar la cantidad exacta solicitada
-      Venta.countDocuments(query)   // Contar basándose en el filtro actual
+        .populate("usuario", "nombre email") // Dejamos solo el de usuario que sí es una referencia ObjectId válida
+        .sort({ fechaVenta: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      Venta.countDocuments(query)
     ]);
 
-    // 3. Calcular metadatos de control para el frontend
     const totalPages = Math.ceil(totalItems / limit) || 1;
 
-    // 4. Retornar respuesta estructurada compatible con el componente modular de paginación
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       ventas,
       pagination: {
@@ -95,8 +120,12 @@ export const getVentas = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Error al obtener listado de ventas:", error.message);
-    res.status(500).json({ success: false, message: "Error al cargar historial." });
+    console.error("❌ [CRITICAL_GET_VENTAS_ERROR]:", error.message);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Error interno al procesar el listado de transacciones.",
+      errorReal: error.message 
+    });
   }
 };
 
@@ -116,7 +145,6 @@ export const deleteVenta = async (req, res) => {
       });
     }
 
-    // Notificamos al frontend vía SSE para que useSystemUpdates limpie la UI
     appEvents.emit('entity-updated', { 
       type: 'VENTA_DELETED', 
       payload: id 
