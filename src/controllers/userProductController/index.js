@@ -170,20 +170,33 @@ export const updateMyProduct = async (req, res) => {
       { returnDocument: 'after', runValidators: true }
     );
 
-    // Grabamos los cambios en el historial de auditoría del sistema
+    // 🔍 IDENTIFICACIÓN ROBUSTA DEL OPERADOR
     const operador = await User.findById(usuarioLogueadoId);
-    const nombreOperador = operador ? operador.nombre : "Operador";
+    
+    // Probamos con .nombre, .email (sacando el @...), .username o fallback final
+    const nombreOperador = operador 
+      ? (operador.nombre || (operador.email ? operador.email.split('@')[0] : null) || operador.username || "Usuario Hangar") 
+      : "Operador";
+
     const productoIdentificado = nombreOriginal || updatedProduct.name;
     const fraseFinal = `${nombreOperador} editó su producto privado ${productoIdentificado}${logDetalle || ""}`;
 
-    await registrarLog({
+    console.log("📝 Despachando log robusto:", fraseFinal);
+
+    // 🛠️ GRABAMOS EN LA DB Y MANDAMOS AMBOS CAMPOS PARA EL FRONT
+    const nuevoLog = await registrarLog({
       usuarioId: usuarioLogueadoId,
       accion: "USER_PRODUCT_UPDATED",
-      details: fraseFinal,
+      detalles: fraseFinal, // 🔒 Para cumplir con el esquema estricto de Mongoose
+      details: fraseFinal,  // 🚀 Para que el componente del Front de la consola no lea "--"
       req
     });
 
-    appEvents.emit('entity-updated', { type: 'PRODUCTS_CHANGED', payload: updatedProduct });
+    // Emitimos el cambio del producto y si tu SSE cuelga los logs de acá, mandamos el payload mapeado
+    appEvents.emit('entity-updated', { 
+      type: 'PRODUCTS_CHANGED', 
+      payload: updatedProduct 
+    });
 
     return res.status(200).json({ success: true, product: updatedProduct });
   } catch (error) {
@@ -191,7 +204,6 @@ export const updateMyProduct = async (req, res) => {
     return res.status(500).json({ message: "Error al editar tu producto" });
   }
 };
-
 /**
  * ❌ 4. ELIMINAR UN PRODUCTO PRIVADO (CON CERROJO DE SEGURIDAD EN RUTA)
  */

@@ -21,6 +21,8 @@ import routerCart from './src/routes/Cart/index.js';
 import routerLog from './src/routes/Log/index.js';
 import routerDashboard from './src/routes/DashBoard/index.js';
 import userProductRoutes from "./src/routes/UserProduct/index.js";
+import shippingRoutes from './src/routes/shipping/index.js'; 
+// (Ajustá la ruta del import según dónde tengas la carpeta de rutas respecto a este archivo)
 const app = express();
 
 // --- 1. CONFIGURACIÓN DEL SERVIDOR HTTP & SOCKET.IO ---
@@ -92,6 +94,7 @@ app.use("/category", routerCategory);
 app.use("/ventas", routerVentas);
 app.use("/Payments", routerPayments);
 app.use("/cart", routerCart);
+app.use("/shipping", shippingRoutes);
 app.use("/log", routerLog);
 app.use("/admin/dashboard", routerDashboard);
 app.use("/my-products", userProductRoutes);

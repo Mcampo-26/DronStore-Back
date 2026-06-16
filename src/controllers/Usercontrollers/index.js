@@ -2,12 +2,13 @@ import Usuario from '../../models/User.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import appEvents from "../../utilities/eventEmitter.js";
-import { registrarLog } from "../../helpers/auditoriaHelper.js"; // 📝 Importante
+import { registrarLog } from "../../helpers/auditoriaHelper.js"; 
 
-// ✅ CREAR usuario
+// ✅ CREAR usuario (Adaptado para recibir opcionalmente múltiples domicilios)
 export const createUsuario = async (req, res) => {
   try {
-    const { nombre, email, password, telefono, role, usuarioId } = req.body; // 🔍 Recibimos usuarioId del operador
+    // 🔍 Agregamos 'domicilios' a la desestructuración del body
+    const { nombre, email, password, telefono, role, usuarioId, domicilios } = req.body; 
 
     const existe = await Usuario.findOne({ email });
     if (existe) return res.status(400).json({ message: 'El email ya existe' });
@@ -21,7 +22,10 @@ export const createUsuario = async (req, res) => {
       telefono,
       password: hashedPassword,
       role: role || null,
-      verificationCode
+      verificationCode,
+      // 🚀 Si vienen domicilios desde el frontend (ej: el modal), los guardamos; 
+      // si no, gracias al modelo por defecto se inicializa como un array vacío []
+      domicilios: domicilios || []
     });
 
     await nuevoUsuario.save();
@@ -49,7 +53,7 @@ export const createUsuario = async (req, res) => {
   }
 };
 
-// 📋 OBTENER usuarios
+// 📋 OBTENER usuarios (Queda igual, recupera automáticamente el array de domicilios)
 export const getUsuarios = async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
@@ -66,17 +70,33 @@ export const getUsuarios = async (req, res) => {
   }
 };
 
-// 🔄 ACTUALIZAR usuario
+// 🔄 ACTUALIZAR usuario (Soporta la sincronización atómica del array completo de depósitos)
 export const updateUsuario = async (req, res) => {
   try {
     const { id } = req.params;
-    const { usuarioId, ...datosActualizados } = req.body; // 🔍 Extraemos el usuarioId del operador
+    const { usuarioId, ...datosActualizados } = req.body; 
 
     if (datosActualizados.password) {
       const salt = await bcrypt.genSalt(10);
       datosActualizados.password = await bcrypt.hash(datosActualizados.password, salt);
     }
 
+    // 🔒 Sanitización de IDs temporales en los domicilios (Buenas Prácticas)
+    // El frontend genera un timestamp local como _id para las nuevas direcciones en la UI.
+    // Mongoose requiere que sean ObjectIds válidos o que no se envíen para que MongoDB los autogenere.
+    if (datosActualizados.domicilios && Array.isArray(datosActualizados.domicilios)) {
+      datosActualizados.domicilios = datosActualizados.domicilios.map(dom => {
+        // Si el _id mide menos de 12 bytes o no cumple el estándar Hex, lo removemos para que la DB le asigne su ID real de MongoDB
+        if (dom._id && dom._id.length !== 24) {
+          const { _id, ...cleanDom } = dom;
+          return cleanDom;
+        }
+        return dom;
+      });
+    }
+
+    // El operador atomic $set reemplaza el array existente de domicilios por el nuevo array ordenado 
+    // que viene desde el modal (con las altas, bajas o cambios de principal ya cocinados).
     const usuarioActualizado = await Usuario.findByIdAndUpdate(
         id,
         { $set: datosActualizados },
@@ -105,15 +125,15 @@ export const updateUsuario = async (req, res) => {
 
     res.json({ success: true, message: 'Usuario actualizado', usuario: usuarioActualizado });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al actualizar usuario' });
+    res.status(500).json({ success: false, message: 'Error al actualizar usuario', error: error.message });
   }
 };
 
-// ❌ ELIMINAR usuario
+// ❌ ELIMINAR usuario (Queda igual, limpia en cascada toda la entidad con sus domicilios embebidos)
 export const deleteUsuario = async (req, res) => {
   try {
     const { id } = req.params;
-    const { usuarioId } = req.query; // 🔍 Recibimos por query
+    const { usuarioId } = req.query; 
 
     const usuarioEliminado = await Usuario.findByIdAndDelete(id);
 
