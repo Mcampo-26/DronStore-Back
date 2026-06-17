@@ -1,9 +1,10 @@
 import DefaultShipping from '../../models/DefaultShipping.js';
 import User from "../../models/User.js";
+import Product from '../../models/Product.js'; // 📦 IMPORTANTE: Traemos el modelo de Productos
 import { obtenerCotizacionesDeEnvio } from '../../services/shipping/shippingGateway.js';
 import appEvents from '../../utilities/eventEmitter.js';
 
-// 🔍 1. COTIZAR ENVÍO EN EL CHECKOUT
+// 🔍 1. COTIZAR ENVÍO EN EL CHECKOUT (BLINDADO Y ULTRA SEGURO)
 export const quoteShipping = async (req, res) => {
   try {
     const { codigoPostalDestino, productos } = req.body;
@@ -12,10 +13,31 @@ export const quoteShipping = async (req, res) => {
       return res.status(400).json({ message: "Faltan datos obligatorios (CP o Productos)" });
     }
 
-    // Calculamos el peso total acumulado del carrito en el servidor para evitar fraudes en el precio
-    const pesoTotalKg = productos.reduce((acc, prod) => acc + (Number(prod.pesoKg) * Number(prod.quantity)), 0);
+    // 📦 MOTOR DE LOGÍSTICA REAL DESDE MONGO:
+    let pesoTotalGramosAcumulado = 0;
 
-    // Llamamos a la capa de servicios (Gateway agnóstico)
+    // Recorremos los ítems que mandó el carrito para buscar su peso real en la DB
+    for (const item of productos) {
+      // Buscamos el producto por su ID (soportando tanto item.productId como item.id por consistencia)
+      const idABuscar = item.productId || item.id;
+      const productoDB = await Product.findById(idABuscar).select('peso_gramos');
+
+      if (productoDB) {
+        // Si el producto no tiene peso asignado, usamos un fallback seguro de 249g
+        const pesoPorUnidad = productoDB.peso_gramos || 249;
+        pesoTotalGramosAcumulado += pesoPorUnidad * Number(item.quantity || 1);
+      } else {
+        // Fallback por si mandan un producto fantasma o eliminado
+        pesoTotalGramosAcumulado += 249 * Number(item.quantity || 1);
+      }
+    }
+
+    // 🧼 Convertimos el total acumulado de gramos a Kilogramos para el Gateway de envíos
+    const pesoTotalKg = pesoTotalGramosAcumulado / 1000;
+
+    console.log(`🛰️ [Logística DronStore] CP: ${codigoPostalDestino} | Peso verificado en DB: ${pesoTotalKg} kg`);
+
+    // Llamamos a la capa de servicios (Gateway agnóstico) con el peso real calculado en el servidor
     const opcionesBusqueda = await obtenerCotizacionesDeEnvio({ codigoPostalDestino, pesoTotalKg });
 
     res.json({
@@ -24,6 +46,7 @@ export const quoteShipping = async (req, res) => {
       options: opcionesBusqueda
     });
   } catch (error) {
+    console.error("❌ ERROR_QUOTE_SHIPPING:", error);
     res.status(500).json({ message: "Error al calcular la cotización", error: error.message });
   }
 };

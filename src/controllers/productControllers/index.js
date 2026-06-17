@@ -63,7 +63,7 @@ export const createProduct = async (req, res) => {
   try {
     // 1. SEPARAMOS el usuarioId de la info del producto
     const { usuarioId, ...productInfo } = req.body;
-    const { name, price, image, description } = productInfo;
+    const { name, price, image, description, peso_gramos } = productInfo;
 
     if (!name || !price || !image) {
       return res.status(400).json({ message: "Faltan protocolos obligatorios" });
@@ -77,12 +77,13 @@ export const createProduct = async (req, res) => {
     // 🤖 GENERACIÓN DE EMBEDDING CON IA
     const embedding = await generarProductEmbedding(name.trim(), description || "");
 
-    // 2. CREAMOS el producto incluyendo el vector generado
+    // 2. CREAMOS el producto incluyendo el vector generado y parseamos el peso numérico
     const newProduct = await Product.create({
       ...productInfo,
       name: name.trim(),
       price: Number(price),
       stock: Number(productInfo.stock || 0),
+      peso_gramos: Number(peso_gramos || 0), // 📦 Nos aseguramos de guardarlo como un número válido
       embedding // ✨ Guardamos el vector en la BD
     });
 
@@ -91,7 +92,7 @@ export const createProduct = async (req, res) => {
       await registrarLog({
         usuarioId,
         accion: "PRODUCT_CREATED",
-        details: `Alta de equipo: ${newProduct.name}`,
+        details: `Alta de equipo: ${newProduct.name} (${newProduct.peso_gramos}g)`,
         req
       });
     }
@@ -114,27 +115,38 @@ export const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // 🔍 Capturamos TODO lo que manda el Zustand
     const { 
       usuarioId, 
-      nombreOriginal, // El nombre que tenía antes de editar
-      logDetalle,     // El string "(modificó: el precio, etc)"
-      ...body         // El resto de los datos técnicos del dron
+      nombreOriginal, 
+      logDetalle,     
+      ...body         
     } = req.body; 
 
-    // 🤖 ACTUALIZACIÓN DEL EMBEDDING SI CAMBIÓ EL NOMBRE O LA DESCRIPCIÓN
+    // 📦 Forzamos que el peso se convierta a número si viene en la petición
+    if (body.peso_gramos !== undefined) {
+      body.peso_gramos = Number(body.peso_gramos || 0);
+    }
+
+    // 🤖 ACTUALIZACIÓN DEL EMBEDDING INTELIGENTE
     if (body.name || body.description) {
-      // Si alguno no viene en el body, buscamos el valor previo para no perder contexto
       const prodPrevio = await Product.findById(id);
       if (prodPrevio) {
         const nuevoNombre = body.name ? body.name.trim() : prodPrevio.name;
         const nuevaDesc = body.description !== undefined ? body.description : prodPrevio.description;
         
-        // Regeneramos el vector reflejando los cambios semánticos
-        body.embedding = await generarProductEmbedding(nuevoNombre, nuevaDesc);
+        const nuevoEmbedding = await generarProductEmbedding(nuevoNombre, nuevaDesc);
+        
+        // 🔥 CLAVE: Solo actualizamos el embedding si la IA lo generó con éxito.
+        // Si la IA devolvió null o falló, mantenemos el embedding viejo y NO rompemos la actualización del peso.
+        if (nuevoEmbedding && nuevoEmbedding.length > 0) {
+          body.embedding = nuevoEmbedding;
+        } else {
+          console.log("⚠️ Conservando embedding anterior para evitar corrupción de datos.");
+        }
       }
     }
 
+    // Actualizamos la base de datos con el body limpio (que ya incluye el peso_gramos)
     const updatedProduct = await Product.findByIdAndUpdate(
       id,
       { $set: body },
@@ -147,7 +159,6 @@ export const updateProduct = async (req, res) => {
       const operador = await User.findById(usuarioId);
       const nombreOperador = operador ? operador.nombre : "Un usuario";
 
-      // 🚀 CONSTRUCCIÓN DE LA FRASE FINAL
       const productoIdentificado = nombreOriginal || updatedProduct.name;
       const fraseFinal = `${nombreOperador} editó el producto ${productoIdentificado}${logDetalle || ""}`;
 

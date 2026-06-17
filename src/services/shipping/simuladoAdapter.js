@@ -12,29 +12,37 @@ export const simuladoAdapter = {
 
       // Si existe un transportista local cargado en tu DB para esa zona, lo priorizamos
       if (tarifaManual) {
+        // ✨ BUENA PRÁCTICA: Aunque la tarifa esté cargada a mano, le sumamos un pequeño 
+        // proporcional por kilo si el bulto excede el peso estándar para cubrir costos de embalaje VIP
+        const recargoKiloManual = pesoTotalKg > 5 ? Math.ceil((pesoTotalKg - 5) * 450) : 0;
+
         return {
           id: `manual_${tarifaManual._id}`,
           providerName: tarifaManual.providerName,
           serviceType: pesoTotalKg > 25 ? "Carga Pesada / Logística Campo" : "Paquetería Regional",
-          cost: tarifaManual.baseCost,
+          cost: Number(tarifaManual.baseCost) + recargoKiloManual,
           deliveryEstimate: tarifaManual.deliveryEstimate,
           trackingBaseUrl: tarifaManual.trackingBaseUrl
         };
       }
 
       // 2. LOGICA SIMULADA POR DEFECTO (Si no hay nada en ManualTariff, calcula dinámicamente)
-      // Simulamos tarifas base según región (Cercanía NOA vs resto del país)
+      // Simulamos tarifas base reales según región (Cercanía NOA vs resto del país)
       const esRegionalNOA = codigoPostalDestino.startsWith('4'); // CP 4000 (Tucumán), 4400 (Salta), etc.
-      let costoBase = esRegionalNOA ? 4 : 7;
+      
+      // 💰 TARIFAS ACTUALIZADAS: Valores reales de mercado para paquetería express
+      let costoBase = esRegionalNOA ? 4800 : 7200; 
       let plazo = esRegionalNOA ? "Llega en 24/48 hs hábiles" : "Llega en 3 a 5 días hábiles";
       let proveedor = esRegionalNOA ? "La Sevillanita (Simulado)" : "Andreani (Simulado)";
 
-      // Recargo por peso (Tarifa por kilo excedente)
-      const precioPorKilo = 2;
+      // 📦 Recargo por peso real por cada kilo (Tarifa por kilo excedente realista)
+      const precioPorKilo = 400; // $550 pesos por cada kilo que pese el paquete
       const costoPeso = Math.ceil(pesoTotalKg * precioPorKilo);
       
-      // Si pasa los 30kg sumamos un recargo estructural por bulto pesado
-      const recargoEstructural = pesoTotalKg > 30 ? 3000 : 0;
+      // Si pasa los 30kg (Drones industriales o bultos gigantes) sumamos un recargo estructural por logística pesada
+      const recargoEstructural = pesoTotalKg > 30 ? 12000 : 0;
+      
+      // Cálculo del costo final sumando bases actualizadas
       const costoFinal = costoBase + costoPeso + recargoEstructural;
 
       return {
