@@ -11,12 +11,6 @@ import { verifyToken } from "../../middlewares/auth.middleware.js";
 
 const router = Router();
 
-/**
- * 🔒 PROTOCOLO DE RUTAS PRIVADAS - RANGO: INVENTARIO DE USUARIO
- * Todas las rutas de este carril exigen de forma obligatoria pasar por 'isAuth'.
- * Esto inyecta el 'req.user' desencriptando el token de sesión de forma segura.
- */
-
 // 📂 GET: /api/my-products -> Obtener el inventario de drones exclusivo del usuario logueado (Paginado)
 router.get("/", verifyToken, getMyProducts);
 
