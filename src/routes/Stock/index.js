@@ -3,8 +3,11 @@ import {
   getStock, 
   updateStock, 
   deleteBatch,    // Importamos la nueva función
-  fetchHistory    // Importamos el historial de movimientos
+  fetchHistory,  
+
 } from "../../controllers/stockControllers/index.js";
+import { getGeoStock } from "../../controllers/stockControllers/geoStockController.js";
+
 
 const router = express.Router();
 
@@ -13,6 +16,7 @@ const router = express.Router();
  * Purpose: Obtiene todos los documentos de stock y lotes.
  */
 router.get("/", getStock);
+router.get('/geo-stock', getGeoStock);
 
 /**
  * Route: GET /stock/movements/:productId

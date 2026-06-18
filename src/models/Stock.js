@@ -10,16 +10,24 @@ const LoteSchema = new Schema({
 });
 
 const StockSchema = new Schema({
-  producto: { type: Schema.Types.ObjectId, ref: 'Product', required: true, unique: true },
+  producto: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
   cantidadTotal: { type: Number, default: 0 }, // Suma automática de todos los lotes
   ubicacion: { type: String, default: 'Almacén Central' },
   stockMinimo: { type: Number, default: 5 },
+  almacen: { 
+    type: Schema.Types.ObjectId, 
+    ref: 'Almacen', 
+    required: true 
+  },
   lotes: [LoteSchema], // Trazabilidad por FIFO
 }, { timestamps: true });
 
-// Middleware para mantener cantidadTotal actualizada antes de guardar
+// 🚀 DEFINICIÓN DEL ÍNDICE COMPUESTO MULTI-ALMACÉN
+StockSchema.index({ producto: 1, almacen: 1 }, { unique: true });
+
+// 🛠️ REPARADO: Al ser síncrono, operamos directo sobre "this" sin invocar a "next"
 StockSchema.pre('save', function() {
-    this.cantidadTotal = this.lotes.reduce((acc, lote) => acc + lote.cantidad, 0);
-    // No necesitas llamar a next() aquí si no hay lógica asíncrona compleja
-  });
+  this.cantidadTotal = this.lotes.reduce((acc, lote) => acc + lote.cantidad, 0);
+});
+
 export default model('Stock', StockSchema);

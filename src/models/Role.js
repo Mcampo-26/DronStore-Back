@@ -7,20 +7,21 @@ const RoleSchema = new mongoose.Schema(
       required: [true, "El nombre del rol es obligatorio"],
       unique: true,
       trim: true,
-      uppercase: true, // Esto ya lo intenta formatear, pero el middleware asegura el tiro
+      uppercase: true, 
     },
-  // models/Role.js
-permissions: {
-  viewDash: { type: Boolean, default: false },
-  viewUsuarios: { type: Boolean, default: false },
-  viewRoles: { type: Boolean, default: false },
-  viewStock: { type: Boolean, default: false },
-  viewCarga: { type: Boolean, default: false },
-  viewAuditoria: { type: Boolean, default: false },
-  // 🚀 AGREGA ESTOS DOS:
-  viewVentas: { type: Boolean, default: false },
-  viewCategorias: { type: Boolean, default: false },
-},
+    permissions: {
+      viewDash: { type: Boolean, default: false },
+      viewUsuarios: { type: Boolean, default: false },
+      viewRoles: { type: Boolean, default: false },
+      viewStock: { type: Boolean, default: false },
+      viewCarga: { type: Boolean, default: false },
+      viewAuditoria: { type: Boolean, default: false },
+      viewVentas: { type: Boolean, default: false },
+      viewCategorias: { type: Boolean, default: false },
+      // 🚀 AGREGAMOS LOS DOS CAMPOS LOGÍSTICOS FALTANTES ACÁ:
+      viewProveedores: { type: Boolean, default: false },
+      viewAlmacenes: { type: Boolean, default: false },
+    },
   },
   {
     timestamps: true,
@@ -28,12 +29,6 @@ permissions: {
   }
 );
 
-/**
- * Middleware Pre-Save (Estándar 2026)
- * Limpia y estandariza el nombre antes de guardarlo en la DB.
- * Al no usar 'next', Mongoose entiende que es una operación síncrona
- * o basada en promesas y continúa automáticamente.
- */
 RoleSchema.pre("save", function () {
   if (this.name) {
     this.name = this.name.trim().toUpperCase();

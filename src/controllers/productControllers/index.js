@@ -9,7 +9,7 @@ import { generarProductEmbedding } from "../../helpers/geminiHelper.js"; // 🤖
 // 1. OBTENER TODOS LOS PRODUCTOS
 export const getProducts = async (req, res) => {
   try {
-    // Desactivamos la caché HTTP agresiva para evitar estados fantasmas 304
+    // Desactivamos la cache HTTP agresiva para evitar estados fantasmas 304
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
     const page = parseInt(req.query.page) || 1;
@@ -32,7 +32,7 @@ export const getProducts = async (req, res) => {
     // Ejecutamos el lote, el total global y los AGOTADOS en paralelo en la BD
     const [products, totalItems, totalAgotados] = await Promise.all([
       Product.find(query)
-        .sort({ creadoEl: -1 })
+        .sort({ createdAt: -1 }) // ✅ CORREGIDO: Mongoose usa 'createdAt' por defecto con timestamps
         .skip((page - 1) * limit)
         .limit(limit),
       Product.countDocuments(query),

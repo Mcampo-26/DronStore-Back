@@ -3,13 +3,17 @@ import Movement from "../../models/Movement.js";
 import Product from "../../models/Product.js";
 import appEvents from "../../utilities/eventEmitter.js";
 
-/**
- * GET /stock
- * Obtiene el inventario completo con datos del producto.
- */
 export const getStock = async (req, res) => {
   try {
-    const stocks = await Stock.find().populate("producto", "name image price");
+    const query = {};
+    if (req.query.almacenId) {
+      query.almacen = req.query.almacenId;
+    }
+
+    const stocks = await Stock.find(query)
+      .populate("producto", "name image price")
+      .populate("almacen", "nombre direccion");
+      
     res.json(stocks);
   } catch (error) {
     console.error("Error fetching stock:", error);
@@ -17,23 +21,21 @@ export const getStock = async (req, res) => {
   }
 };
 
-/**
- * PUT /stock/:id
- * Registra un nuevo lote o incrementa uno existente y genera un movimiento.
- */
 export const updateStock = async (req, res) => {
   try {
     const { id } = req.params; 
-    const { batch, deviceId } = req.body; 
+    const { batch, deviceId, almacenId } = req.body; 
 
-    // 1. Buscar o crear el documento de Stock
-    let stockDoc = await Stock.findOne({ producto: id });
-    
-    if (!stockDoc) {
-      stockDoc = new Stock({ producto: id, lotes: [] });
+    if (!almacenId) {
+      return res.status(400).json({ success: false, msg: "El id del almacén es requerido" });
     }
 
-    // 2. Manejo de lotes
+    let stockDoc = await Stock.findOne({ producto: id, almacen: almacenId });
+    
+    if (!stockDoc) {
+      stockDoc = new Stock({ producto: id, almacen: almacenId, lotes: [] });
+    }
+
     const loteExistente = stockDoc.lotes.find(l => l.codigo === batch.code);
 
     if (loteExistente) {
@@ -48,13 +50,12 @@ export const updateStock = async (req, res) => {
       });
     }
 
-    // 3. Persistencia de datos
-    // Marcamos 'lotes' como modificado para asegurar que Mongoose detecte cambios profundos
     stockDoc.markModified('lotes');
     await stockDoc.save();
 
     const newMovement = new Movement({
       productoId: id,
+      almacenId: almacenId,
       loteCodigo: batch.code,
       tipo: 'ENTRADA', 
       cantidad: Number(batch.quantity),
@@ -64,23 +65,24 @@ export const updateStock = async (req, res) => {
     
     await newMovement.save();
 
-    // 4. Sincronización con el modelo de Producto (Stock total)
-    // Usamos el stockDoc.cantidadTotal que se actualizó en el pre('save') del modelo
-    await Product.findByIdAndUpdate(id, { stock: stockDoc.cantidadTotal });
+    const todosLosStocks = await Stock.find({ producto: id });
+    const nuevoGlobalTotal = todosLosStocks.reduce((acc, doc) => acc + (doc.cantidadTotal || 0), 0);
 
-    // 5. ⚡️ EMISIÓN EN TIEMPO REAL
+    await Product.findByIdAndUpdate(id, { stock: nuevoGlobalTotal });
+
     appEvents.emit('entity-updated', { 
       type: 'STOCK_UPDATED', 
       payload: { 
         productId: id, 
-        newStock: stockDoc.cantidadTotal 
+        newStock: nuevoGlobalTotal 
       } 
     });
 
     res.json({ 
       success: true, 
       msg: "Stock actualizado correctamente", 
-      newTotal: stockDoc.cantidadTotal 
+      newTotal: stockDoc.cantidadTotal,
+      newGlobalTotal: nuevoGlobalTotal
     });
 
   } catch (error) {
@@ -89,15 +91,16 @@ export const updateStock = async (req, res) => {
   }
 };
 
-/**
- * GET /stock/history/:productId
- * Obtiene los últimos 50 movimientos de un producto específico.
- */
 export const fetchHistory = async (req, res) => {
   try {
     const { productId } = req.params;
+    const query = { productoId: productId };
+
+    if (req.query.almacenId) {
+      query.almacenId = req.query.almacenId;
+    }
     
-    const movements = await Movement.find({ productoId: productId })
+    const movements = await Movement.find(query)
       .sort({ createdAt: -1 })
       .limit(50);
 
@@ -108,39 +111,33 @@ export const fetchHistory = async (req, res) => {
   }
 };
 
-/**
- * DELETE /stock/:productId/batch/:batchCode
- * Elimina un lote específico y actualiza el stock total del producto.
- */
 export const deleteBatch = async (req, res) => {
   try {
-    // 🚀 Recorremos los parámetros. Si venía con barras extras, req.params['0'] junta el resto
     const { productId } = req.params;
+    const { almacenId } = req.query;
     let batchCode = req.params.batchCode;
     
     if (req.params['0']) {
       batchCode += req.params['0'];
     }
 
-    // Buscamos el documento para aplicar la lógica de guardado de Mongoose
-    const stockDoc = await Stock.findOne({ producto: productId });
-
-    if (!stockDoc) {
-      return res.status(404).json({ success: false, msg: "Producto no encontrado en inventario" });
+    if (!almacenId) {
+      return res.status(400).json({ success: false, msg: "El id del almacén es requerido en los parámetros de búsqueda" });
     }
 
-    // Filtramos los lotes para eliminar el indicado
+    const stockDoc = await Stock.findOne({ producto: productId, almacen: almacenId });
+
+    if (!stockDoc) {
+      return res.status(404).json({ success: false, msg: "Producto no encontrado en el almacén indicado" });
+    }
+
     stockDoc.lotes = stockDoc.lotes.filter(l => l.codigo !== batchCode);
-    
-    // Al modificar el array directamente, forzamos la marca de modificado
     stockDoc.markModified('lotes');
-    
-    // Al ejecutar .save(), se dispara el pre-save que recalcula cantidadTotal
     await stockDoc.save();
 
-    // Registrar movimiento de ajuste (opcional pero recomendado para auditoría)
     const removalMovement = new Movement({
       productoId: productId,
+      almacenId: almacenId,
       loteCodigo: batchCode,
       tipo: 'AJUSTE_NEGATIVO', 
       cantidad: 0,
@@ -148,22 +145,24 @@ export const deleteBatch = async (req, res) => {
     });
     await removalMovement.save();
 
-    // Sincronizar el total tras la eliminación del lote con el modelo Producto
-    await Product.findByIdAndUpdate(productId, { stock: stockDoc.cantidadTotal });
+    const todosLosStocks = await Stock.find({ producto: productId });
+    const nuevoGlobalTotal = todosLosStocks.reduce((acc, doc) => acc + (doc.cantidadTotal || 0), 0);
 
-    // ⚡️ EMISIÓN EN TIEMPO REAL ORIGINAL
+    await Product.findByIdAndUpdate(productId, { stock: nuevoGlobalTotal });
+
     appEvents.emit('entity-updated', { 
       type: 'STOCK_UPDATED', 
       payload: { 
         productId, 
-        newStock: stockDoc.cantidadTotal 
+        newStock: nuevoGlobalTotal 
       } 
     });
 
     return res.json({ 
       success: true, 
       msg: "Lote eliminado con éxito",
-      newTotal: stockDoc.cantidadTotal 
+      newTotal: stockDoc.cantidadTotal,
+      newGlobalTotal: nuevoGlobalTotal
     });
 
   } catch (error) {

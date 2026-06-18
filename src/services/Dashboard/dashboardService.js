@@ -1,42 +1,29 @@
-// backend/src/services/Dashboard/dashboardService.js
 import Venta from '../../models/Venta.js';
 import Usuario from '../../models/User.js';
 import Log from '../../models/Log.js';
+import Product from '../../models/Product.js'; // 🚀 Importamos Product para contar el stock global real
 import { stockService } from './stockDashboardService.js';
 
-/**
- * Servicio orquestador para procesar métricas del Dashboard de QDRON Store.
- * Centraliza datos de ventas, logs segmentados, usuarios e inventario detallado.
- */
 export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
   
-  // 1. Procesamiento de Ventas (Ingresos y Gráfico de Área)
+  // 1. Procesamiento de Ventas (Se mantiene igual)
   const ventasStats = await Venta.aggregate([
     {
       $facet: {
         totalIngresos: [
           { $match: { status: "approved" } },
-          { 
-            $group: { 
-              _id: null, 
-              sum: { $sum: "$totalAmount" } 
-            } 
-          }
+          { $group: { _id: null, sum: { $sum: "$totalAmount" } } }
         ],
         historico: [
           { $match: { status: "approved" } },
           { $sort: { createdAt: -1 } },
           { $limit: 15 },
-          // 🔍 Desarmamos el array de productos de la venta (si tus productos vienen en un array tipo "items")
-          // Si tu modelo Venta guarda el producto directo en un campo "productId", podés saltear este $unwind
           { $unwind: { path: "$productos", preserveNullAndEmptyArrays: true } }, 
           { $unwind: { path: "$items", preserveNullAndEmptyArrays: true } },
-        
-          // 🤝 Hacemos el lookup dinámico con la colección de productos
           {
             $lookup: {
-              from: "products", // Asegurate de que coincida con el nombre real de tu colección en MongoDB
-              localField: "productos.productoId", // Ajustalo al campo exacto donde guardás la referencia
+              from: "products",
+              localField: "productos.productoId",
               foreignField: "_id",
               as: "productoDetalle"
             }
@@ -44,15 +31,9 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
           {
             $project: {
               _id: 1,
-              hour: {
-                $dateToString: {
-                  format: "%H:%M",
-                  date: "$createdAt"
-                }
-              },
+              hour: { $dateToString: { format: "%H:%M", date: "$createdAt" } },
               totalAmount: 1,
               status: 1,
-              // 🚀 Extraemos el nombre real del producto del lookup. Si no lo encuentra, usa el string del fallback
               productName: {
                 $ifNull: [
                   { $arrayElemAt: ["$productoDetalle.name", 0] },
@@ -67,19 +48,17 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
     }
   ]);
 
-  // 2. Orquestación y Agregación Avanzada en Paralelo (Hangar Core)
-  const [totalUsuarios, inventory, logAnalytics] = await Promise.all([
+  // 2. Orquestación y Agregación Avanzada en Paralelo
+  // 🚀 Agregamos la suma real de stock de todos los productos de la BD en paralelo
+  const [totalUsuarios, inventoryCritical, logAnalytics, globalStockCalc] = await Promise.all([
     Usuario.countDocuments(),
-    
-    stockService.getStockStatsForDash(),
-    
+    stockService.getStockStatsForDash(), // Esto te trae el Top 8 crítico para el gráfico/tabla del dash
     Log.aggregate([
       {
         $facet: {
-          // 📊 EN 2026 EL BACKEND AGRUPA: Devolvemos los totales listos para Recharts sin estresar la CPU del frente
           paraGrafico: [
             { $sort: { fecha: -1 } },
-            { $limit: 200 }, // Analizamos una muestra pesada de los últimos 200 eventos
+            { $limit: 200 },
             {
               $group: {
                 _id: {
@@ -117,7 +96,6 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
                 _id: 0,
                 name: "$_id",
                 value: 1,
-                // Asignamos los colores corporativos directamente desde la persistencia
                 color: {
                   $switch: {
                     branches: [
@@ -130,8 +108,6 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
               }
             }
           ],
-          
-          // ⏱️ FEED CONFIGURABLE: Los últimos 20 logs crudos para la Timeline con soporte de Skip para el botón de cargar más
           paraFeed: [
             { $sort: { fecha: -1 } },
             { $skip: skip },
@@ -139,23 +115,25 @@ export const getStatsService = async ({ limit = 20, skip = 0 } = {}) => {
           ]
         }
       }
+    ]),
+    // 🚀 Query rápida para saber el stock total de la empresa de verdad:
+    Product.aggregate([
+      { $group: { _id: null, total: { $sum: { $ifNull: ["$stock", 0] } } } }
     ])
   ]);
 
   const dataLogs = logAnalytics[0] || { paraGrafico: [], paraFeed: [] };
 
-  // 3. Estructura de respuesta final enviada al Controller (Limpia e Inmutable)
+  // 3. Estructura de respuesta final limpia
   return {
     stats: {
       ingresos: ventasStats[0].totalIngresos[0]?.sum || 0,
       activos: totalUsuarios,
-      stock: inventory.reduce((acc, curr) => acc + (curr.stock || 0), 0)
+      stock: globalStockCalc[0]?.total || 0 // 🚀 Cambiado: Ahora sí es el stock global real de QDRON Store
     },
     ventas: ventasStats[0].historico || [],
-    inventory: inventory || [], 
-    
-    // Formato de salida desacoplado
-    securityDistData: dataLogs.paraGrafico || [], // 🚀 Listo: <Pie data={securityDistData} /> directo en Recharts
-    logsFeed: dataLogs.paraFeed || []          // 🚀 Listo: Lista corta de 20 para tu Timeline
+    inventory: inventoryCritical || [], // Mantiene el top 8 para componentes visuales cortos
+    securityDistData: dataLogs.paraGrafico || [], 
+    logsFeed: dataLogs.paraFeed || [] 
   };
 };

@@ -22,6 +22,8 @@ import routerLog from './src/routes/Log/index.js';
 import routerDashboard from './src/routes/DashBoard/index.js';
 import userProductRoutes from "./src/routes/UserProduct/index.js";
 import shippingRoutes from './src/routes/shipping/index.js'; 
+import almacenRoutes from './src/routes/Almacen/index.js';
+import proveedorRoutes from './src/routes/Proveedor/index.js';
 // (Ajustá la ruta del import según dónde tengas la carpeta de rutas respecto a este archivo)
 const app = express();
 
@@ -98,6 +100,9 @@ app.use("/shipping", shippingRoutes);
 app.use("/log", routerLog);
 app.use("/admin/dashboard", routerDashboard);
 app.use("/my-products", userProductRoutes);
+app.use('/almacenes', almacenRoutes);
+app.use('/proveedores', proveedorRoutes);
+
 
 app.get('/', (req, res) => {
   res.status(200).json({ status: 'online', service: 'Dron-Store Hybrid (Socket+SSE)' });

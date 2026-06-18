@@ -13,11 +13,10 @@ const ProductSchema = new Schema({
     ref: 'Category',
     required: true
   },
-  stock: { type: Number, default: 0 },
+  stock: { type: Number, default: 0 }, // Puede servir como stock global total
   isOferta: { type: Boolean, default: false },
   descuento: { type: Number, default: 0 },
   peso_gramos: {
-
     type: Number,
     default: 0
   },
@@ -31,6 +30,12 @@ const ProductSchema = new Schema({
   embedding: {
     type: [Number],
     default: []
+  }, // <--- ¡Agregada la coma que faltaba acá!
+  
+  proveedorId: { 
+    type: Schema.Types.ObjectId, // Simplificado para usar la importación de arriba
+    ref: 'Proveedor', 
+    required: true 
   }
 
 }, {
