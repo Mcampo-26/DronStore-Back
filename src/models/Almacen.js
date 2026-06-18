@@ -2,6 +2,12 @@
 import mongoose from 'mongoose';
 
 const AlmacenSchema = new mongoose.Schema({
+  // 🚀 EL CERROJO DE SEGURIDAD: Vincula el almacén al usuario dueño
+  usuarioId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: [true, "El almacén debe estar vinculado a un usuario/proveedor"] 
+  },
   nombre: { type: String, required: true },
   direccion: {
     calle: String,
@@ -10,10 +16,10 @@ const AlmacenSchema = new mongoose.Schema({
   },
   ubicacion: {
     type: { type: String, default: 'Point' },
-    coordinates: [Number]
+    coordinates: [Number] // [longitud, latitud]
   },
   existencias: [{
-    productoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }, // Ajustado ref a 'Product' para coincidir con tu modelo
+    productoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
     cantidad: { type: Number, default: 0 },
     posicionFisica: String
   }]

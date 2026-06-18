@@ -44,14 +44,22 @@ export const createProveedor = async (req, res) => {
 
 export const getProveedores = async (req, res) => {
   try {
-    // Traemos solo los proveedores activos (borrado lógico)
-    const proveedores = await Proveedor.find({ activo: true }).sort({ razonSocial: 1 });
+    const usuarioLogueadoId = req.user?._id;
+    const rolUsuario = req.user?.role?.name;
+
+    let query = {};
+
+    // 🔒 Si es un Proveedor o Usuario común, lo forzamos a ver SOLO su registro corporativo
+    if (rolUsuario !== 'ADMIN' && rolUsuario !== 'SUPERADMIN') {
+      query.usuarioId = usuarioLogueadoId; // O el campo con el que enlaces el dueño en tu modelo de Proveedor
+    }
+
+    const proveedores = await Proveedor.find(query);
     return res.status(200).json({ success: true, payload: proveedores });
   } catch (error) {
-    console.error("❌ Error en getProveedores:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
- };
+};
 
 export const updateProveedor = async (req, res) => {
   try {

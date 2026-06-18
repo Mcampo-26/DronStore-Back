@@ -1,9 +1,10 @@
 import Almacen from '../../models/Almacen.js';
 
-
+// 🏗️ CREAR ALMACÉN (Asigna automáticamente el dueño real)
 export const createAlmacen = async (req, res) => {
   try {
     const { nombre, calle, ciudad, provincia, longitud, latitud } = req.body;
+    const usuarioLogueadoId = req.user?._id;
 
     if (!nombre || !longitud || !latitud) {
       return res.status(400).json({ 
@@ -12,12 +13,37 @@ export const createAlmacen = async (req, res) => {
       });
     }
 
+    // 🚀 BLINDAJE SENIOR: Limpiamos y parseamos las coordenadas
+    let lng = parseFloat(longitud);
+    let lat = parseFloat(latitud);
+
+    // 🛡️ Si el frontend mandó una longitud de Tucumán sin punto (ej: -65291141) la acomodamos
+    if (Math.abs(lng) > 180) {
+      // Si empieza con -65... o similar de Tucumán y vino sin punto decimal:
+      const lngString = longitud.toString();
+      // Insertamos el punto decimal después del segundo dígito (-65.)
+      if (lngString.startsWith('-')) {
+        lng = parseFloat(lngString.slice(0, 3) + '.' + lngString.slice(3));
+      } else {
+        lng = parseFloat(lngString.slice(0, 2) + '.' + lngString.slice(2));
+      }
+    }
+
+    // 🔒 Validación final de rangos para evitar el crash de MongoServerError
+    if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+      return res.status(400).json({
+        success: false,
+        message: `Coordenadas fuera de rango geográfico válido (Lng: ${lng}, Lat: ${lat}).`
+      });
+    }
+
     const nuevoAlmacen = new Almacen({
+      usuarioId: usuarioLogueadoId,
       nombre,
       direccion: { calle, ciudad, provincia },
       ubicacion: {
         type: 'Point',
-        coordinates: [parseFloat(longitud), parseFloat(latitud)]
+        coordinates: [lng, lat] // [longitud, latitud] correctas
       },
       existencias: []
     });
@@ -35,9 +61,22 @@ export const createAlmacen = async (req, res) => {
   }
 };
 
+// 📡 OBTENER ALMACENES (Filtrado inteligente y multi-rol Senior)
 export const getAlmacenes = async (req, res) => {
   try {
-    const almacenes = await Almacen.find();
+    const usuarioLogueadoId = req.user?._id;
+    const rolUsuario = req.user?.role?.name; // O como manejes el string del rol (ej: "ADMIN", "USUARIO")
+
+    let query = {};
+
+    // 🛡️ Si NO es Administrador, lo obligamos a ver únicamente sus almacenes asignados
+    if (rolUsuario !== 'ADMIN' && rolUsuario !== 'SUPERADMIN') {
+      query.usuarioId = usuarioLogueadoId;
+    }
+
+    // Un único punto de salida de datos optimizado
+    const almacenes = await Almacen.find(query).populate('existencias.productoId', 'name price');
+    
     return res.status(200).json({ success: true, payload: almacenes });
   } catch (error) {
     console.error("❌ Error en getAlmacenes:", error);
@@ -45,13 +84,22 @@ export const getAlmacenes = async (req, res) => {
   }
 };
 
+// 🔍 OBTENER UN ALMACÉN POR ID (Con doble validación de seguridad)
 export const getAlmacenById = async (req, res) => {
   try {
     const { id } = req.params;
+    const usuarioLogueadoId = req.user?._id;
+    const rolUsuario = req.user?.role?.name;
+
     const almacen = await Almacen.findById(id).populate('existencias.productoId', 'name price image');
     
     if (!almacen) {
       return res.status(404).json({ success: false, message: "Almacén no encontrado." });
+    }
+
+    // 🔒 Control de seguridad horizontal: Evita que un proveedor adivine el ID de otro y le robe info
+    if (rolUsuario !== 'ADMIN' && rolUsuario !== 'SUPERADMIN' && String(almacen.usuarioId) !== String(usuarioLogueadoId)) {
+      return res.status(403).json({ success: false, message: "No tenés permisos para ver este almacén." });
     }
 
     return res.status(200).json({ success: true, payload: almacen });
@@ -61,6 +109,7 @@ export const getAlmacenById = async (req, res) => {
   }
 };
 
+// 🗺️ BUSCAR STOCK POR CERCANÍA (Mantiene el alcance global para logística del cliente)
 export const buscarStockPorCercania = async (req, res) => {
   try {
     const { productId, lat, lng } = req.query;
@@ -72,6 +121,7 @@ export const buscarStockPorCercania = async (req, res) => {
       });
     }
 
+    // Aquí no filtramos por usuarioId porque el cliente final necesita buscar en TODOS los proveedores disponibles de la plataforma
     const almacenesCercanos = await Almacen.find({
       ubicacion: {
         $near: {
@@ -90,7 +140,7 @@ export const buscarStockPorCercania = async (req, res) => {
     }).populate('existencias.productoId', 'name price');
 
     const resultadoFormateado = almacenesCercanos.map(almacen => {
-      const itemStock = almacen.existencias.find(e => String(e.productoId._id) === String(productId));
+      const itemStock = almacen.existencias.find(e => String(e.productoId?._id || e.productoId) === String(productId));
       return {
         almacenId: almacen._id,
         nombre: almacen.nombre,

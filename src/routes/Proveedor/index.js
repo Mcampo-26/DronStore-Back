@@ -5,12 +5,15 @@ import {
   updateProveedor,
   deleteProveedor
 } from '../../controllers/proveedorControllers/index.js';
+// 🚀 IMPORTANTE: Importamos el middleware de validación de token
+import { verifyToken } from '../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
-router.post('/', createProveedor);
-router.get('/', getProveedores);
-router.put('/:id', updateProveedor);
-router.delete('/:id', deleteProveedor);
+// 🔒 Aplicamos el escudo a todos los endpoints corporativos de proveedores
+router.post('/', verifyToken, createProveedor);
+router.get('/', verifyToken, getProveedores);
+router.put('/:id', verifyToken, updateProveedor);
+router.delete('/:id', verifyToken, deleteProveedor);
 
 export default router;

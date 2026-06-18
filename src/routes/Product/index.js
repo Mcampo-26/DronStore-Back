@@ -5,20 +5,20 @@ import {
   createProduct, 
   updateProduct, 
   deleteProduct,
-  getProductRecommendations // 🤖 Agregamos el nuevo controlador que crearemos ahora
+  getProductRecommendations 
 } from '../../controllers/productControllers/index.js';
+import { verifyToken } from '../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
+// Rutas Públicas (Catálogo del Marketplace para los clientes)
 router.get('/', getProducts);
 router.get('/:id', getProductById);
-router.post('/', createProduct);
-router.put('/:id', updateProduct);
-router.delete('/:id', deleteProduct);
-
-// ==========================================
-// NUEVA RUTA PARA RECOMENDACIONES CON IA
-// ==========================================
 router.get('/:id/recommendations', getProductRecommendations);
+
+// Rutas Privadas (Solo proveedores o administradores autenticados)
+router.post('/', verifyToken, createProduct);
+router.put('/:id', verifyToken, updateProduct);
+router.delete('/:id', verifyToken, deleteProduct);
 
 export default router;

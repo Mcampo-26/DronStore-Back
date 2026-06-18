@@ -2,38 +2,21 @@ import express from "express";
 import { 
   getStock, 
   updateStock, 
-  deleteBatch,    // Importamos la nueva función
+  deleteBatch,    
   fetchHistory,  
-
 } from "../../controllers/stockControllers/index.js";
 import { getGeoStock } from "../../controllers/stockControllers/geoStockController.js";
-
+import { verifyToken } from '../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
-/**
- * Route: GET /stock
- * Purpose: Obtiene todos los documentos de stock y lotes.
- */
-router.get("/", getStock);
+// 🗺️ Ruta Pública: El mapa de calor de stock geolocalizado para el Marketplace
 router.get('/geo-stock', getGeoStock);
 
-/**
- * Route: GET /stock/movements/:productId
- * Purpose: Obtiene el historial de movimientos de un producto específico.
- */
-router.get("/movements/:productId", fetchHistory);
-
-/**
- * Route: PUT /stock/:id
- * Purpose: Actualiza niveles de stock y agrega un nuevo lote.
- */
-router.put("/:id", updateStock);
-
-/**
- * Route: DELETE /stock/:productId/batch/:batchCode
- * Purpose: Elimina un lote específico de un producto.
- */
-router.delete("/:productId/batch/:batchCode", deleteBatch);
+// 🔒 Rutas Privadas Protegidas: Control estricto de inventario por proveedor
+router.get("/", verifyToken, getStock);
+router.get("/movements/:productId", verifyToken, fetchHistory);
+router.put("/:id", verifyToken, updateStock);
+router.delete("/:productId/batch/:batchCode", verifyToken, deleteBatch);
 
 export default router;
