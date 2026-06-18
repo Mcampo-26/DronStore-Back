@@ -20,6 +20,7 @@ const RoleSchema = new mongoose.Schema(
       viewCategorias: { type: Boolean, default: false },
       // 🚀 AGREGAMOS LOS DOS CAMPOS LOGÍSTICOS FALTANTES ACÁ:
       viewProveedores: { type: Boolean, default: false },
+      viewReportes: { type: Boolean, default: false },
       viewAlmacenes: { type: Boolean, default: false },
     },
   },

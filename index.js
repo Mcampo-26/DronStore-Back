@@ -24,6 +24,7 @@ import userProductRoutes from "./src/routes/UserProduct/index.js";
 import shippingRoutes from './src/routes/shipping/index.js'; 
 import almacenRoutes from './src/routes/Almacen/index.js';
 import proveedorRoutes from './src/routes/Proveedor/index.js';
+import reporteRoutes from './src/routes/Reportes/index.js';
 // (Ajustá la ruta del import según dónde tengas la carpeta de rutas respecto a este archivo)
 const app = express();
 
@@ -102,6 +103,7 @@ app.use("/admin/dashboard", routerDashboard);
 app.use("/my-products", userProductRoutes);
 app.use('/almacenes', almacenRoutes);
 app.use('/proveedores', proveedorRoutes);
+app.use('/reportes', reporteRoutes);
 
 
 app.get('/', (req, res) => {
